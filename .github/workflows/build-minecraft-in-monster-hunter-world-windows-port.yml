@@ -1,0 +1,365 @@
+# BUILD: Minecraft in Monster Hunter World (Windows port) 0.1.0 -> DRAFT release minecraft-in-monster-hunter-world-windows-port-v0.1.0 of this repo.
+# Alvariill0's Windows port of justbustin's minecraft-crossover-bridge (Monster Hunter: World + Minecraft 1.21.1,
+# MIT), built unchanged at a pinned commit with the creator's own steps: `make` in monster-hunter-world/mhw-bridge
+# under MSYS2 MINGW64 and `gradlew build` in monster-hunter-world/mc-bridge (Gradle on JDK 25, JDK 21 toolchain).
+# No game files: the bridge finds signatures and offsets at run time; MinGW headers and the vendored MinHook only.
+#
+# Two jobs: `build` runs the creator's build on a Windows runner with a read-only token and uploads the files
+# as an artifact; `release` runs none of that code: it checks SHA256SUMS.txt, LICENSE/NOTICE, the GPL source
+# and that no game file is in any file or archive, then makes a DRAFT release (published by hand after review).
+# Started by hand: gh api -X POST repos/yousufkiani99/mashup-builds/actions/workflows/build-minecraft-in-monster-hunter-world-windows-port.yml/dispatches
+# -f ref=<branch>. The push trigger only registers the workflow; on a push both jobs are skipped.
+name: Build - Minecraft in Monster Hunter World (Windows port)
+
+on:
+  push:
+    branches: ['builds/wave2']
+    paths: ['.github/workflows/build-minecraft-in-monster-hunter-world-windows-port.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    timeout-minutes: 60
+    env:
+      ID: minecraft-in-monster-hunter-world-windows-port
+      VER: 0.1.0
+      UPSTREAM: Alvariill0/minecraft-crossover-bridge-windows
+      UPSTREAM_SHA: 6e1a4f15d77cd827f89abe2b7e3f3a274270f34c
+    defaults:
+      run:
+        working-directory: upstream
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Alvariill0/minecraft-crossover-bridge-windows
+          ref: 6e1a4f15d77cd827f89abe2b7e3f3a274270f34c
+          path: upstream
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Logs folder
+        shell: bash
+        working-directory: .
+        run: |
+          mkdir -p logs out
+          test "$(git -C upstream rev-parse HEAD)" = "$UPSTREAM_SHA"   # the pinned commit, nothing else
+          git -C upstream log -1 --format='upstream %H %ci %s' | tee logs/0-upstream.txt
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: mingw-w64-x86_64-gcc make
+
+      - name: Build dinput8.dll and mhwbridge_core.dll (make, MSYS2 MINGW64)
+        id: native
+        shell: msys2 {0}
+        run: |
+          set -o pipefail
+          g++ --version | tee ../logs/1-native.log
+          pacman -Q mingw-w64-x86_64-gcc make | tee -a ../logs/1-native.log
+          make -C monster-hunter-world/mhw-bridge 2>&1 | tee -a ../logs/1-native.log
+          test -f monster-hunter-world/mhw-bridge/build/dinput8.dll
+          test -f monster-hunter-world/mhw-bridge/build/mhwbridge_core.dll
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            21
+            25
+
+      - uses: gradle/actions/setup-gradle@v4 # checks gradle-wrapper.jar is genuine
+
+      - name: Build the Fabric mod (Minecraft 1.21.1)
+        id: gradle
+        shell: cmd
+        working-directory: upstream/monster-hunter-world/mc-bridge
+        run: |
+          call gradlew.bat --no-daemon --no-configuration-cache --stacktrace -Porg.gradle.java.installations.fromEnv=JAVA_HOME_21_X64,JAVA_HOME_25_X64 build > ..\..\..\logs\2-gradle.log 2>&1
+          set RC=%ERRORLEVEL%
+          type ..\..\..\logs\2-gradle.log
+          exit /b %RC%
+
+      - name: Package the release files
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=../out; G=../stage/game; B=monster-hunter-world/mhw-bridge/build
+          rm -rf ../stage; mkdir -p "$G/mhwbridge"
+          JAR=""; for f in monster-hunter-world/mc-bridge/build/libs/*.jar; do case "$f" in *-sources.jar|*-dev.jar) ;; *) JAR="$f" ;; esac; done
+          test -n "$JAR"; cp "$JAR" "$OUT/"
+          cp LICENSE "$OUT/LICENSE.txt"
+          {
+            echo "Minecraft in Monster Hunter: World (Windows port) ${VER} - unofficial community build"
+            echo
+            echo "What this is: a ready-made build of Alvariill0's Windows port (https://github.com/${UPSTREAM}) of"
+            echo "justbustin's minecraft-crossover-bridge, compiled unchanged from commit ${UPSTREAM_SHA} by GitHub Actions"
+            echo "(windows-latest; make with MSYS2 MINGW64 gcc, and Gradle with Temurin JDK 25/21). It is NOT an official"
+            echo "release: it is a community build made for the Mashup Library app under the project's MIT licence"
+            echo "(LICENSE.txt). Report problems with this build to the Mashup Library, not to Alvariill0 or justbustin."
+            echo
+            echo "SOLO ONLY: never join online sessions or answer SOS flares with it (it changes monster HP). Made for"
+            echo "Monster Hunter: World 15.23.00 (build 421810) on DirectX 11, windowed."
+            echo
+            echo "Credits: justbustin (minecraft-crossover-bridge, MIT); Alvariill0 (the Windows 11 port); Tsuda Kageyu"
+            echo "(MinHook, BSD-2-Clause); FabricMC."
+            echo
+            echo "NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT."
+            echo "Not affiliated with Capcom. No game files are included."
+            echo
+            echo "---- Files ----"
+            echo "${ID}-${VER}-game-files.zip unpacks next to MonsterHunterWorld.exe: dinput8.dll (loader),"
+            echo "  mhwbridge/mhwbridge_core.dll (the bridge, MinHook compiled in), mhwbridge/LICENSE.txt, NOTICE.txt,"
+            echo "  MinHook-LICENSE.txt"
+            echo "$(basename "$JAR") is the Fabric mod for Minecraft 1.21.1 (Fabric Loader 0.19.5, Fabric API 0.116.17+1.21.1)."
+            echo
+            echo "==== MinHook: LICENSE.txt ===="; cat monster-hunter-world/mhw-bridge/third_party/minhook/LICENSE.txt; echo
+          } > "$OUT/NOTICE.txt"
+          cp "$B/dinput8.dll" "$G/"; cp "$B/mhwbridge_core.dll" "$G/mhwbridge/"
+          cp "$OUT/LICENSE.txt" "$OUT/NOTICE.txt" "$G/mhwbridge/"
+          cp monster-hunter-world/mhw-bridge/third_party/minhook/LICENSE.txt "$G/mhwbridge/MinHook-LICENSE.txt"
+          (cd "$G" && 7z a -tzip -bso0 "../../out/${ID}-${VER}-game-files.zip" .)
+          mkdir -p ../logs/raw && cp "$B"/*.dll ../logs/raw/
+          (cd "$OUT" && sha256sum -- * | sed 's/ \*/  /' > ../SHA256SUMS.txt) && mv ../SHA256SUMS.txt "$OUT/" && cat "$OUT/SHA256SUMS.txt"
+
+      - name: Collect files, logs and status (always)
+        if: always()
+        shell: bash
+        working-directory: .
+        run: |
+          set -euo pipefail
+          mkdir -p push && cp -r out/. push/ 2>/dev/null || true
+          mkdir -p push/logs && cp -r logs/. push/logs/ 2>/dev/null || true
+          {
+            echo "upstream=${UPSTREAM}@${UPSTREAM_SHA}"
+            echo "run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "native=${{ steps.native.outcome }} gradle=${{ steps.gradle.outcome }} package=${{ steps.package.outcome }}"
+          } > push/STATUS.txt
+
+      - name: Upload them for the release job
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-minecraft-in-monster-hunter-world-windows-port
+          path: push/
+          if-no-files-found: error
+          retention-days: 3
+
+  release:
+    # Runs none of the creator's code (no checkout, nothing from the artifact is executed): checks the files, then
+    # makes a DRAFT release. Publishing is done by hand after review.
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      ID: minecraft-in-monster-hunter-world-windows-port
+      VER: 0.1.0
+      TAG: minecraft-in-monster-hunter-world-windows-port-v0.1.0
+      TITLE: "Minecraft in Monster Hunter World (Windows port)"
+      UPSTREAM: Alvariill0/minecraft-crossover-bridge-windows
+      UPSTREAM_SHA: 6e1a4f15d77cd827f89abe2b7e3f3a274270f34c
+      LICENCE: MIT
+      GPL: 'no'
+      OWN_DLLS: ''
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-minecraft-in-monster-hunter-world-windows-port
+          path: build
+
+      - name: Check the files (SHA256SUMS, licence and notice, GPL source, no game files)
+        shell: bash
+        working-directory: build
+        run: |
+          set -euo pipefail
+          cat STATUS.txt
+          python3 -I - > ../check.log 2>&1 <<'EOF' || { cat ../check.log; exit 1; }
+          import hashlib, os, re, sys, zipfile
+          def sha(b): return hashlib.sha256(b).hexdigest()
+          files = sorted(f for f in os.listdir('.') if os.path.isfile(f) and f != 'STATUS.txt')
+          bad = []
+          for n in ('SHA256SUMS.txt', 'LICENSE.txt', 'NOTICE.txt'):
+              if n not in files: bad.append('missing ' + n)
+          sums = {}
+          for line in open('SHA256SUMS.txt', encoding='utf-8'):
+              line = line.rstrip('\r\n')
+              if line:
+                  h, name = line.split('  ', 1); sums[name] = h
+          present = set(files) - {'SHA256SUMS.txt'}
+          if set(sums) != present: bad.append('SHA256SUMS.txt and the files differ: %s' % sorted(set(sums) ^ present))
+          for name, h in sorted(sums.items()):
+              ok = name in present and sha(open(name, 'rb').read()) == h
+              print('%-8s %s %s' % ('ok' if ok else 'MISMATCH', h, name))
+              if not ok: bad.append('hash mismatch: ' + name)
+          if os.environ['GPL'] == 'yes' and not any(f.lower().endswith('source.zip') or 'source' in f.lower() for f in files):
+              bad.append('GPL build without its source zip')
+          # No game files: game data archives, Unity/game assemblies, Minecraft classes, and (when the build job listed them)
+          # the compile-time reference assemblies, by name and by SHA-256.
+          GAME_EXT = {'.wad', '.iwad', '.esm', '.esl', '.bsa', '.ba2', '.cpk', '.vpk', '.pak', '.utoc', '.ucas', '.uasset',
+                      '.uexp', '.umap', '.bdt', '.bhd', '.dcx', '.gpk', '.forge', '.rpf'}
+          GAME_DLL = re.compile(r'^(assembly-csharp.*|unityengine.*|unity\..*|mono\.cecil.*)\.dll$')
+          forbidden_sha, forbidden_name = {}, set()
+          if os.path.exists('logs/forbidden-assemblies.txt'):
+              for line in open('logs/forbidden-assemblies.txt', encoding='utf-8'):
+                  p = line.split()
+                  if len(p) >= 2: forbidden_sha[p[0]] = p[1]; forbidden_name.add(p[1].lower())
+              print('reference assemblies that must not ship: %d' % len(forbidden_sha))
+          own = {n.lower() for n in os.environ.get('OWN_DLLS', '').split()}
+          def check(container, name, data):
+              base = name.replace('\\', '/').rsplit('/', 1)[-1].lower()
+              where = container if container == name else container + ':' + name
+              if os.path.splitext(base)[1] in GAME_EXT: bad.append('game data file: ' + where)
+              if GAME_DLL.match(base): bad.append('game assembly: ' + where)
+              if base in forbidden_name and base not in own: bad.append('reference assembly (by name): ' + where)
+              if sha(data) in forbidden_sha: bad.append('reference assembly (by SHA-256): ' + where)
+              if container.endswith('.jar') and container != name and re.match(r'(net/minecraft|com/mojang)/', name):
+                  bad.append('Minecraft class: ' + where)
+          n = 0
+          for f in files:
+              data = open(f, 'rb').read(); check(f, f, data); n += 1
+              if f.lower().endswith(('.zip', '.jar')):
+                  with zipfile.ZipFile(f) as z:
+                      for i in z.infolist():
+                          if i.is_dir(): continue
+                          d = z.read(i); check(f, i.filename, d); n += 1
+                          if i.filename.lower().endswith('.jar'):
+                              import io
+                              with zipfile.ZipFile(io.BytesIO(d)) as j:
+                                  for k in j.infolist():
+                                      if not k.is_dir(): check(i.filename, k.filename, j.read(k)); n += 1
+          print('checked %d files and archive entries' % n)
+          for b in bad: print('PROBLEM', b)
+          sys.exit(1 if bad else 0)
+          EOF
+          cat ../check.log
+
+      - name: Write the build log summary
+        shell: bash
+        working-directory: build
+        run: |
+          set -euo pipefail
+          python3 -I - <<'EOF'
+          import hashlib, os
+          out = open('BUILD-LOG-SUMMARY.txt', 'w', encoding='utf-8', newline='\n')
+          w = lambda s='': out.write(s + '\n')
+          w('Build log summary: %s %s (%s)' % (os.environ['TITLE'], os.environ['VER'], os.environ['TAG']))
+          w('Workflow run: %s' % os.environ['RUN_URL'])
+          w('Workflow commit: %s' % os.environ['GITHUB_SHA'])
+          w('This file is not listed in SHA256SUMS.txt: it is written after the build, from the build job\'s logs.')
+          w()
+          w('==== STATUS.txt ====')
+          w(open('STATUS.txt', encoding='utf-8', errors='replace').read().rstrip())
+          w()
+          w('==== release checks ====')
+          w(open('../check.log', encoding='utf-8', errors='replace').read().rstrip())
+          logs = []
+          for d, _, fs in os.walk('logs'):
+              for f in fs: logs.append(os.path.join(d, f).replace('\\', '/'))
+          for p in sorted(logs):
+              size = os.path.getsize(p)
+              if p.startswith('logs/raw/') or not p.endswith(('.log', '.txt', '.json')):
+                  w(); w('==== %s (%d bytes, sha256 %s; binary copy kept for checking, not shown) ====' % (
+                      p, size, hashlib.sha256(open(p, 'rb').read()).hexdigest()))
+                  continue
+              lines = open(p, encoding='utf-8', errors='replace').read().splitlines()
+              w()
+              if size <= 24000:
+                  w('==== %s (%d bytes) ====' % (p, size)); [w(l) for l in lines]
+              else:
+                  w('==== %s (%d bytes, %d lines: first 40 and last 150 shown) ====' % (p, size, len(lines)))
+                  [w(l) for l in lines[:40]]; w('[...]'); [w(l) for l in lines[-150:]]
+          out.close()
+          EOF
+          wc -c BUILD-LOG-SUMMARY.txt
+
+      - name: Make the DRAFT release minecraft-in-monster-hunter-world-windows-port-v0.1.0
+        shell: bash
+        working-directory: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # A draft left by an earlier try of this workflow is replaced; a published release is never touched.
+          gh api "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | [.id, .draft] | @tsv" > ../existing.tsv
+          while IFS=$'\t' read -r RID DRAFT; do
+            [ -n "$RID" ] || continue
+            if [ "$DRAFT" = "true" ]; then gh api -X DELETE "repos/$GH_REPO/releases/$RID"; echo "deleted old draft $RID"
+            else echo "$TAG is already published; not touching it"; exit 1; fi
+          done < ../existing.tsv
+          if git ls-remote --exit-code --tags "https://github.com/$GH_REPO.git" "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "tag $TAG already exists"; exit 1
+          fi
+          {
+            echo "**DRAFT, not published.** Unofficial community build for the Mashup Library."
+            echo
+            echo "Alvariill0's Windows port of justbustin's minecraft-crossover-bridge (Monster Hunter: World + Minecraft 1.21.1), compiled unchanged from the pinned commit with its own Makefile (MSYS2 MINGW64 gcc) and Gradle build."
+            echo
+            echo "- Source: https://github.com/${UPSTREAM}/tree/${UPSTREAM_SHA}"
+            echo "- Licence: ${LICENCE} (LICENSE.txt; credits and third-party notices in NOTICE.txt)"
+            [ "$GPL" = yes ] && echo "- Complete corresponding source: "
+            echo "- Built by: ${RUN_URL} (workflow \`.github/workflows/build-${ID}.yml\` at ${GITHUB_SHA})"
+            echo "- Details: https://github.com/${GH_REPO}/blob/${GITHUB_SHA}/docs/${ID}/README.md"
+            echo "- No game files are included."
+            echo
+            echo "SHA-256 (SHA256SUMS.txt):"
+            echo '```'
+            cat SHA256SUMS.txt
+            echo '```'
+          } > ../notes.md
+          FILES=(); for f in *; do if [ -f "$f" ] && [ "$f" != STATUS.txt ]; then FILES+=("$f"); fi; done
+          printf '%s\n' "${FILES[@]}"
+          gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "$TITLE $VER" --notes-file ../notes.md "${FILES[@]}"
+          gh api "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | .html_url, (.assets[] | \"\(.name) \(.size)\")"
+
+  failure-log:
+    # Only when the build fails: keeps the build's logs (the artifact's logs/ and, when GitHub serves it, the job log)
+    # as a DRAFT release `debug-<id>-<run>` so they can be read without the Actions log viewer (delete those drafts
+    # once read). Runs none of the creator's code.
+    needs: build
+    if: failure() && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: build-minecraft-in-monster-hunter-world-windows-port
+          path: build
+
+      - name: Save the failed build's logs as a draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          FILES=()
+          if [ -d build ]; then (cd build && zip -qr ../build-logs.zip STATUS.txt logs) && FILES+=(build-logs.zip); fi
+          JID=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs" --jq '.jobs[] | select(.name == "build") | .id')
+          for i in $(seq 1 12); do
+            if gh api "repos/$GH_REPO/actions/jobs/$JID/logs" > build-job-log.txt 2> err.txt && [ -s build-job-log.txt ]; then
+              FILES+=(build-job-log.txt); tail -n 80 build-job-log.txt; break
+            fi
+            cat err.txt; sleep 15
+          done
+          [ ${#FILES[@]} -gt 0 ] || { echo "no logs to save"; exit 1; }
+          gh release create "debug-minecraft-in-monster-hunter-world-windows-port-$RUN_ID" --draft --target "$GITHUB_SHA" --title "debug log minecraft-in-monster-hunter-world-windows-port $RUN_ID (delete me)" \
+            --notes "Logs of a failed build, kept for reading. Not a release." "${FILES[@]}"

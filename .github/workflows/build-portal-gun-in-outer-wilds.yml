@@ -1,0 +1,448 @@
+# BUILD: Portal Gun in Outer Wilds 0.1.0 -> DRAFT release portal-gun-in-outer-wilds-v0.1.0 of this repo.
+# Portal Gun in Outer Wilds by charlystereo (rehan-remade/universal-modder, examples/outer-wilds-portal-gun, MIT),
+# built unchanged at a pinned commit: `dotnet build src -c Release` (net48; the README's command, output moved with
+# -p:ModDir) and the converter tools/convert.py (+ vpk.py, source_mdl.py, vtf.py, unchanged) frozen with PyInstaller
+# (Python 3.12; PyInstaller, numpy and pillow pinned by SHA-256) so players need no Python.
+# Compile-time only: the NuGet packages OWML 2.16.3 and OuterWildsGameLibs 1.1.16.1372 (the community's reference
+# package of the game's assemblies). Nothing from them ships: the job lists every assembly in both packages
+# (logs/forbidden-assemblies.txt) and the release job fails if any of them, by name or SHA-256, is in any file or
+# archive. The converter reads the player's own Portal 2 at install time; no Valve or Mobius files are included.
+#
+# Two jobs: `build` runs the creator's build on a Windows runner with a read-only token and uploads the files
+# as an artifact; `release` runs none of that code: it checks SHA256SUMS.txt, LICENSE/NOTICE, the GPL source
+# and that no game file is in any file or archive, then makes a DRAFT release (published by hand after review).
+# Started by hand: gh api -X POST repos/yousufkiani99/mashup-builds/actions/workflows/build-portal-gun-in-outer-wilds.yml/dispatches
+# -f ref=<branch>. The push trigger only registers the workflow; on a push both jobs are skipped.
+name: Build - Portal Gun in Outer Wilds
+
+on:
+  push:
+    branches: ['builds/wave2']
+    paths: ['.github/workflows/build-portal-gun-in-outer-wilds.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    timeout-minutes: 45
+    env:
+      ID: portal-gun-in-outer-wilds
+      VER: 0.1.0
+      UPSTREAM: rehan-remade/universal-modder
+      UPSTREAM_SHA: cda0d76649caa9d9ed6c8b980cdb36f4a4bdf9f8
+      EX: examples/outer-wilds-portal-gun
+    defaults:
+      run:
+        working-directory: upstream/examples/outer-wilds-portal-gun
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: rehan-remade/universal-modder
+          ref: cda0d76649caa9d9ed6c8b980cdb36f4a4bdf9f8
+          path: upstream
+          persist-credentials: false
+          sparse-checkout: examples/outer-wilds-portal-gun
+
+      - name: Logs folder
+        shell: bash
+        working-directory: .
+        run: |
+          mkdir -p logs out
+          test "$(git -C upstream rev-parse HEAD)" = "$UPSTREAM_SHA"   # the pinned commit, nothing else
+          git -C upstream log -1 --format='upstream %H %ci %s' | tee logs/0-upstream.txt
+          (cd upstream && git ls-files -- LICENSE "$EX") | tee -a logs/0-upstream.txt
+          test "$(python -I -c "import json,sys; print(json.load(open(sys.argv[1]))['version'])" "upstream/$EX/src/manifest.json")" = "$VER"
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Build the OWML mod (dotnet build src -c Release)
+        id: dotnet
+        shell: bash
+        run: |
+          set -o pipefail
+          dotnet --info > ../../../logs/1-dotnet-info.log 2>&1 || true
+          # The csproj builds straight into OWML's Mods folder; -p:ModDir points it at ours (the README's command).
+          MOD="$(cygpath -w "$PWD/../../../moddir/charlystereo.PortalGun")"
+          dotnet build src -c Release "-p:ModDir=$MOD" 2>&1 | tee ../../../logs/1-dotnet-build.log
+          test -f ../../../moddir/charlystereo.PortalGun/OWPortalGun.dll
+          test -f ../../../moddir/charlystereo.PortalGun/manifest.json
+          test -f ../../../moddir/charlystereo.PortalGun/default-config.json
+
+      - name: List the compile-time packages' assemblies (none of them may ship) and their licences
+        id: refs
+        shell: bash
+        run: |
+          set -euo pipefail
+          NUGET="$USERPROFILE/.nuget/packages"
+          test -d "$NUGET/outerwildsgamelibs/1.1.16.1372"
+          test -d "$NUGET/owml/2.16.3"
+          : > ../../../logs/forbidden-assemblies.txt
+          for p in outerwildsgamelibs/1.1.16.1372 owml/2.16.3; do
+            (cd "$NUGET/$p" && find . -type f \( -iname '*.dll' -o -iname '*.exe' \) -print0 | xargs -0 sha256sum) \
+              | while read -r h f; do f=${f#\*}; echo "$h $(basename "$f") ${p} ${f#./}"; done >> ../../../logs/forbidden-assemblies.txt
+          done
+          wc -l ../../../logs/forbidden-assemblies.txt
+          test -s ../../../logs/forbidden-assemblies.txt
+          {
+            for p in outerwildsgamelibs/1.1.16.1372 owml/2.16.3; do
+              d="$NUGET/$p"; n=${p%/*}
+              echo "== $p"; sha256sum "$d"/*.nupkg 2>/dev/null || true
+              grep -o -E '<license[^<]*</license>|<licenseUrl>[^<]*</licenseUrl>|<projectUrl>[^<]*</projectUrl>|<authors>[^<]*</authors>|<repository [^>]*>' "$d/$n.nuspec" || true
+            done
+            echo "== everything restored (project.assets.json)"
+            grep -o -E '"[A-Za-z0-9.]+/[0-9][^"]*": \{' src/obj/project.assets.json | sort -u
+          } > ../../../logs/2-nuget.log 2>&1
+          cat ../../../logs/2-nuget.log
+
+      - name: Check the mod folder holds only the mod (no reference or OWML assemblies)
+        id: modcheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          M=../../../moddir/charlystereo.PortalGun
+          (cd "$M" && find . -type f | sort | xargs sha256sum) | tee ../../../logs/3-mod-folder.txt
+          EXTRA=$(cd "$M" && find . -type f \( -iname '*.dll' -o -iname '*.exe' \) ! -name OWPortalGun.dll)
+          if [ -n "$EXTRA" ]; then echo "unexpected assemblies in the mod folder: $EXTRA"; exit 1; fi
+          H=$(sha256sum "$M/OWPortalGun.dll" | cut -d' ' -f1)
+          if grep -q "^$H " ../../../logs/forbidden-assemblies.txt; then echo "OWPortalGun.dll equals a reference assembly"; exit 1; fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Freeze the converter (tools/convert.py, unchanged) with PyInstaller
+        id: converter
+        shell: bash
+        run: |
+          set -o pipefail
+          cat > ../../../convert-requirements.txt <<'EOF'
+          altgraph==0.17.5 --hash=sha256:f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597
+          numpy==2.3.4 --hash=sha256:985f1e46358f06c2a09921e8921e2c98168ed4ae12ccd6e5e87a4f1857923f32
+          packaging==26.3 --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+          pefile==2024.8.26 --hash=sha256:76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f
+          pillow==12.3.0 --hash=sha256:a2b55dd6b2a4c4b7d87ffa56bdb33fdc5fdb9a462173861a7bc097f17d91cb09
+          pyinstaller==6.22.3 --hash=sha256:500bd58c7bf7e584a8435adccbd763a0b918d5c12b08d74ff50fd79b2915458b
+          pyinstaller-hooks-contrib==2026.9 --hash=sha256:fb3e67dd64122561724c48ad0366ac9e8c16e638b63bf7d85de03bf3fdbf06c3
+          pywin32-ctypes==0.2.3 --hash=sha256:8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8
+          setuptools==80.9.0 --hash=sha256:062d34222ad13e0cc312a4c02d73f059e86a4acbfbdea8f8f76b28c99f306922
+          EOF
+          python -m venv ../../../venv
+          V=../../../venv/Scripts
+          "$V/python" -m pip install --disable-pip-version-check --no-deps --only-binary=:all: --require-hashes \
+            -r ../../../convert-requirements.txt 2>&1 | tee ../../../logs/4-converter.log
+          "$V/python" --version | tee -a ../../../logs/4-converter.log
+          "$V/python" -m pip freeze | tee -a ../../../logs/4-converter.log
+          "$V/pyinstaller" --noconfirm --clean --onedir --console --name owpg-convert --paths "$(cygpath -w "$PWD/tools")" \
+            --distpath ../../../convdist --workpath ../../../convwork --specpath ../../../convwork \
+            "$(cygpath -w "$PWD/tools/convert.py")" 2>&1 | tee -a ../../../logs/4-converter.log
+          test -f ../../../convdist/owpg-convert/owpg-convert.exe
+          # Smoke test of the frozen program: --help needs numpy, PIL and the readers to import.
+          ../../../convdist/owpg-convert/owpg-convert.exe --help 2>&1 | tee ../../../logs/4-converter-help.txt
+          grep -q portalgun.owpg ../../../logs/4-converter-help.txt
+          set +e; ../../../convdist/owpg-convert/owpg-convert.exe --portal2 "$(cygpath -w "$RUNNER_TEMP")" --out "$(cygpath -w "$RUNNER_TEMP/owpg-test")" > ../../../logs/4-converter-noportal2.txt 2>&1; RC=$?; set -e
+          cat ../../../logs/4-converter-noportal2.txt
+          test "$RC" = 1 && grep -q "Portal 2 not found" ../../../logs/4-converter-noportal2.txt
+
+      - name: Package the release files
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee -a "$(cygpath -u "$GITHUB_WORKSPACE")/logs/3-package-trace.log") 2>&1   # readable in the failure-log draft
+          trap 'echo "FAILED (exit $?) at line $LINENO: $BASH_COMMAND"' ERR
+          OUT=../../../out; ST=../../../stage; M=../../../moddir/charlystereo.PortalGun
+          rm -rf "$ST"; mkdir -p "$ST/mod" "$ST/conv"
+          cp ../../LICENSE "$OUT/LICENSE.txt"
+          SP=../../../venv/Lib/site-packages
+          {
+            echo "Portal Gun in Outer Wilds ${VER} - unofficial community build"
+            echo
+            echo "What this is: a ready-made build of Portal Gun by charlystereo, the universal-modder example"
+            echo "https://github.com/${UPSTREAM}/tree/${UPSTREAM_SHA}/${EX}, compiled unchanged from commit"
+            echo "${UPSTREAM_SHA} by GitHub Actions (windows-latest, .NET SDK 9: dotnet build src -c Release), plus its"
+            echo "converter tools/convert.py (unchanged) frozen into owpg-convert.exe with PyInstaller 6.22.3 (Python 3.12,"
+            echo "numpy 2.3.4, pillow 12.3.0) so players need no Python. It is NOT an official release: it is a community"
+            echo "build made for the Mashup Library app under the repository's MIT licence (LICENSE.txt). Report problems"
+            echo "with this build to the Mashup Library, not to charlystereo or the universal-modder contributors."
+            echo
+            echo "Single player. Made for Outer Wilds 1.1.16.1372 (Steam, Echoes of the Eye) with OWML 2.16.3 (installed"
+            echo "separately). The portal gun's model, textures and sounds are converted on the player's machine from their own"
+            echo "Portal 2 (owpg-convert.exe --portal2 \"<Portal 2 folder>\" --out \"%LOCALAPPDATA%\\OWPortalGun\")."
+            echo
+            echo "Compiled against the NuGet packages OWML 2.16.3 and OuterWildsGameLibs 1.1.16.1372 (reference assemblies,"
+            echo "build time only). None of their assemblies are in these files (checked by name and SHA-256)."
+            echo
+            echo "Credits: charlystereo (Portal Gun); Rehan and universal-modder contributors (MIT); the Outer Wilds modding"
+            echo "community (OWML). Portal 2's assets: Valve, converted from your own copy, never redistributed."
+            echo "Not affiliated with Mobius Digital, Annapurna Interactive or Valve. No game files are included."
+            echo
+            echo "---- Files ----"
+            echo "${ID}-${VER}-mod.zip        charlystereo.PortalGun/ for OWML's Mods folder: OWPortalGun.dll, manifest.json,"
+            echo "                            default-config.json (and OWPortalGun.pdb, debug symbols), LICENSE.txt, NOTICE.txt"
+            echo "${ID}-${VER}-converter.zip  owpg-convert/ (owpg-convert.exe and its _internal/ folder: Python 3.12, numpy,"
+            echo "                            pillow, parts of setuptools pulled in by PyInstaller), LICENSE.txt, NOTICE.txt"
+            echo
+            echo "==== Python (bundled in the converter): LICENSE ===="
+            cat "$(cygpath -u "$pythonLocation")/LICENSE.txt"; echo
+            for pkg in numpy pillow pyinstaller setuptools; do
+              echo "==== ${pkg} (bundled in the converter): licence files ===="
+              "../../../venv/Scripts/python" -I -c "import importlib.metadata as m, sys
+          d = m.distribution(sys.argv[1]); print(d.metadata['Name'], d.version, '-', d.metadata.get('License-Expression') or d.metadata.get('License', '')[:200])
+          for f in d.files or []:
+              n = str(f).replace(chr(92), '/').lower()
+              if '.dist-info/' in n and any(k in n.rsplit('/', 1)[-1] for k in ('licen', 'copying', 'notice')):
+                  print('---', f); print(f.read_text(encoding='utf-8'))" "$pkg"
+              echo
+            done
+          } > "$OUT/NOTICE.txt"
+          cp -r "$M" "$ST/mod/"
+          cp "$OUT/LICENSE.txt" "$OUT/NOTICE.txt" "$ST/mod/charlystereo.PortalGun/"
+          (cd "$ST/mod" && 7z a -tzip -bso0 "../../out/${ID}-${VER}-mod.zip" charlystereo.PortalGun)
+          cp -r ../../../convdist/owpg-convert "$ST/conv/"
+          cp "$OUT/LICENSE.txt" "$OUT/NOTICE.txt" "$ST/conv/owpg-convert/"
+          (cd "$ST/conv" && 7z a -tzip -bso0 "../../out/${ID}-${VER}-converter.zip" owpg-convert)
+          7z l "$OUT/${ID}-${VER}-mod.zip" | tee ../../../logs/5-zip-listing.txt
+          7z l "$OUT/${ID}-${VER}-converter.zip" | tail -n 40 | tee -a ../../../logs/5-zip-listing.txt
+          mkdir -p ../../../logs/raw && cp "$M/OWPortalGun.dll" ../../../logs/raw/
+          (cd "$OUT" && sha256sum -- * | sed 's/ \*/  /' > ../SHA256SUMS.txt && mv ../SHA256SUMS.txt .) && cat "$OUT/SHA256SUMS.txt"
+
+      - name: Collect files, logs and status (always)
+        if: always()
+        shell: bash
+        working-directory: .
+        run: |
+          set -euo pipefail
+          mkdir -p push && cp -r out/. push/ 2>/dev/null || true
+          mkdir -p push/logs && cp -r logs/. push/logs/ 2>/dev/null || true
+          {
+            echo "upstream=${UPSTREAM}@${UPSTREAM_SHA} (${EX})"
+            echo "run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "dotnet=${{ steps.dotnet.outcome }} refs=${{ steps.refs.outcome }} modcheck=${{ steps.modcheck.outcome }} converter=${{ steps.converter.outcome }} package=${{ steps.package.outcome }}"
+          } > push/STATUS.txt
+
+      - name: Upload them for the release job
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-portal-gun-in-outer-wilds
+          path: push/
+          if-no-files-found: error
+          retention-days: 3
+
+  release:
+    # Runs none of the creator's code (no checkout, nothing from the artifact is executed): checks the files, then
+    # makes a DRAFT release. Publishing is done by hand after review.
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      ID: portal-gun-in-outer-wilds
+      VER: 0.1.0
+      TAG: portal-gun-in-outer-wilds-v0.1.0
+      TITLE: "Portal Gun in Outer Wilds"
+      UPSTREAM: rehan-remade/universal-modder
+      UPSTREAM_SHA: cda0d76649caa9d9ed6c8b980cdb36f4a4bdf9f8
+      LICENCE: MIT
+      GPL: 'no'
+      OWN_DLLS: 'OWPortalGun.dll'
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-portal-gun-in-outer-wilds
+          path: build
+
+      - name: Check the files (SHA256SUMS, licence and notice, GPL source, no game files)
+        shell: bash
+        working-directory: build
+        run: |
+          set -euo pipefail
+          cat STATUS.txt
+          python3 -I - > ../check.log 2>&1 <<'EOF' || { cat ../check.log; exit 1; }
+          import hashlib, os, re, sys, zipfile
+          def sha(b): return hashlib.sha256(b).hexdigest()
+          files = sorted(f for f in os.listdir('.') if os.path.isfile(f) and f != 'STATUS.txt')
+          bad = []
+          for n in ('SHA256SUMS.txt', 'LICENSE.txt', 'NOTICE.txt'):
+              if n not in files: bad.append('missing ' + n)
+          sums = {}
+          for line in open('SHA256SUMS.txt', encoding='utf-8'):
+              line = line.rstrip('\r\n')
+              if line:
+                  h, name = line.split('  ', 1); sums[name] = h
+          present = set(files) - {'SHA256SUMS.txt'}
+          if set(sums) != present: bad.append('SHA256SUMS.txt and the files differ: %s' % sorted(set(sums) ^ present))
+          for name, h in sorted(sums.items()):
+              ok = name in present and sha(open(name, 'rb').read()) == h
+              print('%-8s %s %s' % ('ok' if ok else 'MISMATCH', h, name))
+              if not ok: bad.append('hash mismatch: ' + name)
+          if os.environ['GPL'] == 'yes' and not any(f.lower().endswith('source.zip') or 'source' in f.lower() for f in files):
+              bad.append('GPL build without its source zip')
+          # No game files: game data archives, Unity/game assemblies, Minecraft classes, and (when the build job listed them)
+          # the compile-time reference assemblies, by name and by SHA-256.
+          GAME_EXT = {'.wad', '.iwad', '.esm', '.esl', '.bsa', '.ba2', '.cpk', '.vpk', '.pak', '.utoc', '.ucas', '.uasset',
+                      '.uexp', '.umap', '.bdt', '.bhd', '.dcx', '.gpk', '.forge', '.rpf'}
+          GAME_DLL = re.compile(r'^(assembly-csharp.*|unityengine.*|unity\..*|mono\.cecil.*)\.dll$')
+          forbidden_sha, forbidden_name = {}, set()
+          if os.path.exists('logs/forbidden-assemblies.txt'):
+              for line in open('logs/forbidden-assemblies.txt', encoding='utf-8'):
+                  p = line.split()
+                  if len(p) >= 2: forbidden_sha[p[0]] = p[1]; forbidden_name.add(p[1].lower())
+              print('reference assemblies that must not ship: %d' % len(forbidden_sha))
+          own = {n.lower() for n in os.environ.get('OWN_DLLS', '').split()}
+          def check(container, name, data):
+              base = name.replace('\\', '/').rsplit('/', 1)[-1].lower()
+              where = container if container == name else container + ':' + name
+              if os.path.splitext(base)[1] in GAME_EXT: bad.append('game data file: ' + where)
+              if GAME_DLL.match(base): bad.append('game assembly: ' + where)
+              if base in forbidden_name and base not in own: bad.append('reference assembly (by name): ' + where)
+              if sha(data) in forbidden_sha: bad.append('reference assembly (by SHA-256): ' + where)
+              if container.endswith('.jar') and container != name and re.match(r'(net/minecraft|com/mojang)/', name):
+                  bad.append('Minecraft class: ' + where)
+          n = 0
+          for f in files:
+              data = open(f, 'rb').read(); check(f, f, data); n += 1
+              if f.lower().endswith(('.zip', '.jar')):
+                  with zipfile.ZipFile(f) as z:
+                      for i in z.infolist():
+                          if i.is_dir(): continue
+                          d = z.read(i); check(f, i.filename, d); n += 1
+                          if i.filename.lower().endswith('.jar'):
+                              import io
+                              with zipfile.ZipFile(io.BytesIO(d)) as j:
+                                  for k in j.infolist():
+                                      if not k.is_dir(): check(i.filename, k.filename, j.read(k)); n += 1
+          print('checked %d files and archive entries' % n)
+          for b in bad: print('PROBLEM', b)
+          sys.exit(1 if bad else 0)
+          EOF
+          cat ../check.log
+
+      - name: Write the build log summary
+        shell: bash
+        working-directory: build
+        run: |
+          set -euo pipefail
+          python3 -I - <<'EOF'
+          import hashlib, os
+          out = open('BUILD-LOG-SUMMARY.txt', 'w', encoding='utf-8', newline='\n')
+          w = lambda s='': out.write(s + '\n')
+          w('Build log summary: %s %s (%s)' % (os.environ['TITLE'], os.environ['VER'], os.environ['TAG']))
+          w('Workflow run: %s' % os.environ['RUN_URL'])
+          w('Workflow commit: %s' % os.environ['GITHUB_SHA'])
+          w('This file is not listed in SHA256SUMS.txt: it is written after the build, from the build job\'s logs.')
+          w()
+          w('==== STATUS.txt ====')
+          w(open('STATUS.txt', encoding='utf-8', errors='replace').read().rstrip())
+          w()
+          w('==== release checks ====')
+          w(open('../check.log', encoding='utf-8', errors='replace').read().rstrip())
+          logs = []
+          for d, _, fs in os.walk('logs'):
+              for f in fs: logs.append(os.path.join(d, f).replace('\\', '/'))
+          for p in sorted(logs):
+              size = os.path.getsize(p)
+              if p.startswith('logs/raw/') or not p.endswith(('.log', '.txt', '.json')):
+                  w(); w('==== %s (%d bytes, sha256 %s; binary copy kept for checking, not shown) ====' % (
+                      p, size, hashlib.sha256(open(p, 'rb').read()).hexdigest()))
+                  continue
+              lines = open(p, encoding='utf-8', errors='replace').read().splitlines()
+              w()
+              if size <= 24000:
+                  w('==== %s (%d bytes) ====' % (p, size)); [w(l) for l in lines]
+              else:
+                  w('==== %s (%d bytes, %d lines: first 40 and last 150 shown) ====' % (p, size, len(lines)))
+                  [w(l) for l in lines[:40]]; w('[...]'); [w(l) for l in lines[-150:]]
+          out.close()
+          EOF
+          wc -c BUILD-LOG-SUMMARY.txt
+
+      - name: Make the DRAFT release portal-gun-in-outer-wilds-v0.1.0
+        shell: bash
+        working-directory: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # A draft left by an earlier try of this workflow is replaced; a published release is never touched.
+          gh api "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | [.id, .draft] | @tsv" > ../existing.tsv
+          while IFS=$'\t' read -r RID DRAFT; do
+            [ -n "$RID" ] || continue
+            if [ "$DRAFT" = "true" ]; then gh api -X DELETE "repos/$GH_REPO/releases/$RID"; echo "deleted old draft $RID"
+            else echo "$TAG is already published; not touching it"; exit 1; fi
+          done < ../existing.tsv
+          if git ls-remote --exit-code --tags "https://github.com/$GH_REPO.git" "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "tag $TAG already exists"; exit 1
+          fi
+          {
+            echo "**DRAFT, not published.** Unofficial community build for the Mashup Library."
+            echo
+            echo "Portal Gun 0.1.0 by charlystereo (universal-modder example: Portal 2's portal gun in Outer Wilds), compiled unchanged from the pinned commit with the README's \`dotnet build src -c Release\`, plus its converter (tools/convert.py, unchanged) frozen into a Windows program with PyInstaller so players don't need Python. The converter reads the player's own Portal 2 at install time; nothing from Valve or Mobius is in these files."
+            echo
+            echo "- Source: https://github.com/${UPSTREAM}/tree/${UPSTREAM_SHA}/examples/outer-wilds-portal-gun"
+            echo "- Licence: ${LICENCE} (LICENSE.txt; credits and third-party notices in NOTICE.txt)"
+            [ "$GPL" = yes ] && echo "- Complete corresponding source: "
+            echo "- Built by: ${RUN_URL} (workflow \`.github/workflows/build-${ID}.yml\` at ${GITHUB_SHA})"
+            echo "- Details: https://github.com/${GH_REPO}/blob/${GITHUB_SHA}/docs/${ID}/README.md"
+            echo "- No game files are included."
+            echo
+            echo "SHA-256 (SHA256SUMS.txt):"
+            echo '```'
+            cat SHA256SUMS.txt
+            echo '```'
+          } > ../notes.md
+          FILES=(); for f in *; do if [ -f "$f" ] && [ "$f" != STATUS.txt ]; then FILES+=("$f"); fi; done
+          printf '%s\n' "${FILES[@]}"
+          gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "$TITLE $VER" --notes-file ../notes.md "${FILES[@]}"
+          gh api "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | .html_url, (.assets[] | \"\(.name) \(.size)\")"
+
+  failure-log:
+    # Only when the build fails: keeps the build's logs (the artifact's logs/ and, when GitHub serves it, the job log)
+    # as a DRAFT release `debug-<id>-<run>` so they can be read without the Actions log viewer (delete those drafts
+    # once read). Runs none of the creator's code.
+    needs: build
+    if: failure() && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: build-portal-gun-in-outer-wilds
+          path: build
+
+      - name: Save the failed build's logs as a draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          FILES=()
+          if [ -d build ]; then (cd build && zip -qr ../build-logs.zip STATUS.txt logs) && FILES+=(build-logs.zip); fi
+          JID=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs" --jq '.jobs[] | select(.name == "build") | .id')
+          for i in $(seq 1 12); do
+            if gh api "repos/$GH_REPO/actions/jobs/$JID/logs" > build-job-log.txt 2> err.txt && [ -s build-job-log.txt ]; then
+              FILES+=(build-job-log.txt); tail -n 80 build-job-log.txt; break
+            fi
+            cat err.txt; sleep 15
+          done
+          [ ${#FILES[@]} -gt 0 ] || { echo "no logs to save"; exit 1; }
+          gh release create "debug-portal-gun-in-outer-wilds-$RUN_ID" --draft --target "$GITHUB_SHA" --title "debug log portal-gun-in-outer-wilds $RUN_ID (delete me)" \
+            --notes "Logs of a failed build, kept for reading. Not a release." "${FILES[@]}"
