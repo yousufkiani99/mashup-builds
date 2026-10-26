@@ -199,7 +199,7 @@ jobs:
           for f in d.files or []:
               n = str(f).replace(chr(92), '/').lower()
               if '.dist-info/' in n and any(k in n.rsplit('/', 1)[-1] for k in ('licen', 'copying', 'notice')):
-                  print('---', f); print(f.read_text(encoding='utf-8', errors='replace'))" "$pkg"
+                  print('---', f); print(f.read_text(encoding='utf-8'))" "$pkg"
               echo
             done
           } > "$OUT/NOTICE.txt"
