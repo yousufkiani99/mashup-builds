@@ -105,6 +105,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          exec > >(tee -a "$(cygpath -u "$GITHUB_WORKSPACE")/logs/3-package-trace.log") 2>&1   # readable in the failure-log draft
+          trap 'echo "FAILED (exit $?) at line $LINENO: $BASH_COMMAND"' ERR
           OUT=../out; ST=../stage; rm -rf "$ST"; mkdir -p "$ST/game/Data/SKSE/Plugins/MojaveInSkyrim" "$ST/src"
           cp LICENSE "$OUT/LICENSE.txt"
           {
