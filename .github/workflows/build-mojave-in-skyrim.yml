@@ -139,7 +139,20 @@ jobs:
           cp README.md "$D/"; cp LICENSE "$D/LICENSE.txt"; cp THIRD-PARTY-NOTICES.md "$D/"; cp "$OUT/NOTICE.txt" "$D/"
           (cd "$ST/game" && 7z a -tzip -bso0 "../../out/${ID}-${VER}.zip" .)
           # Complete source: tracked files of the repo and its submodules, plus vcpkg's downloaded sources
-          git ls-files --recurse-submodules -z | tar --null -T - -cf - | tar -x -C "$ST/src"
+          git ls-files --recurse-submodules -z > ../lsfiles.bin
+          python -I - ../lsfiles.bin "$ST/src" <<'EOF'
+          import os, shutil, sys
+          dst = sys.argv[2]; n = links = 0
+          for b in open(sys.argv[1], 'rb').read().split(b'\0'):
+              if not b: continue
+              p = b.decode('utf-8'); t = os.path.join(dst, p)
+              os.makedirs(os.path.dirname(t), exist_ok=True)
+              if os.path.islink(p): open(t, 'w', encoding='utf-8', newline='').write(os.readlink(p).replace(os.sep, '/')); links += 1
+              elif os.path.isfile(p): shutil.copyfile(p, t)
+              else: sys.exit('tracked file missing: ' + p)
+              n += 1
+          print(n, 'files,', links, 'symlinks written as text files holding their target')
+          EOF
           mkdir -p "$ST/src/vcpkg-downloads"
           find ../vcpkg-downloads -maxdepth 1 -type f ! -name '*.part' -exec cp {} "$ST/src/vcpkg-downloads/" \; || true
           { echo "Source of Mojave in Skyrim ${VER} as built for the Mashup Library (GPL-3.0-or-later)."
