@@ -93,6 +93,45 @@ jobs:
           } > ../logs/2-nuget-licences.log 2>&1
           cat ../logs/2-nuget-licences.log
 
+      - name: Source of the LGPL libraries the mod folder ships (CriFsV2Lib, p5rpc interfaces)
+        id: lgpl
+        shell: bash
+        working-directory: .
+        run: |
+          set -euo pipefail
+          # CriFsV2Lib(.Definitions), p5rpc.lib.interfaces and p5rpc.inputhook.interfaces are LGPL-3.0-or-later (their
+          # NuGet licence, see logs/2-nuget-licences.log) and their DLLs are in the mod folder, so their source goes
+          # next to the build: each library project at the tag whose csproj has the shipped version.
+          L=stage-lgpl/personacraft-0.1.0-lgpl-sources; rm -rf stage-lgpl _lgpl; mkdir -p "$L" _lgpl
+          while read -r REPO TAG SHA PATHS WHAT; do
+            [ -n "$REPO" ] || continue
+            D="_lgpl/${REPO#*/}"
+            git clone -q --depth 1 --branch "$TAG" "https://github.com/$REPO.git" "$D"
+            test "$(git -C "$D" rev-parse HEAD)" = "$SHA"
+            git -C "$D" archive --format=tar --prefix="${REPO#*/}-$TAG/" HEAD -- ${PATHS//,/ } | tar -x -C "$L"
+            echo "$REPO tag $TAG = $SHA: ${PATHS} -> ${WHAT}" | tee -a logs/2-lgpl-sources.log
+          done <<'EOF'
+          Sewer56/CriFsV2Lib 2.1.2 9bf3b9c94015275db8d4f89be99454a4cd92d398 CriFsV2Lib,CriFsV2Lib.Definitions,README.md,global.json CriFsV2Lib.dll 2.1.2 and CriFsV2Lib.Definitions.dll 1.1.0
+          AnimatedSwine37/p5rpc.lib 1.1.0 6cb4bda9eee2bfd5334617a1fdd2386319d74ffb p5rpc.lib.interfaces,LICENSE,README.md p5rpc.lib.interfaces.dll 1.1.0
+          AnimatedSwine37/p5rpc.inputhook 1.0 ad78e4d0d193a9a4af3b198f71fdb18a09c8b187 p5rpc.inputhook.interfaces,README.md p5rpc.inputhook.interfaces.dll 1.0.0
+          EOF
+          SPDX=https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text
+          curl -fsSL --retry 3 -o "$L/LGPL-3.0.txt" "$SPDX/LGPL-3.0-or-later.txt"
+          curl -fsSL --retry 3 -o "$L/GPL-3.0.txt" "$SPDX/GPL-3.0-or-later.txt"
+          printf '%s  %s\n' 996af0513df21f7496288951c41428a03c174e9e4a9d63665c57d670f845ccb1 "$L/LGPL-3.0.txt" \
+            fb981668c18a279e285fc4d83fba1e836cc84dd4daa73c9697d3cfd2d8aca6e0 "$L/GPL-3.0.txt" | sha256sum -c -
+          {
+            echo "Source of the LGPL-3.0-or-later libraries shipped, unmodified, in PersonaCraft ${VER}'s mod folder"
+            echo "(as restored from NuGet by the build; see SHA256SUMS of the packages in the build log summary)."
+            echo
+            cat logs/2-lgpl-sources.log
+            echo
+            echo "Each folder is the library's project at that tag (git archive). Licence texts: LGPL-3.0.txt, GPL-3.0.txt."
+            echo "PersonaCraft itself is MIT; it uses these libraries as separate DLLs that can be replaced."
+          } > "$L/README.txt"
+          cp "$L/LGPL-3.0.txt" "$L/GPL-3.0.txt" out/
+          (cd stage-lgpl && 7z a -tzip -bso0 "../out/${ID}-${VER}-lgpl-sources.zip" personacraft-0.1.0-lgpl-sources)
+
       - name: Package the release files
         id: package
         shell: bash
@@ -128,10 +167,16 @@ jobs:
             echo "---- NuGet libraries in the mod folder (each under its own licence; see the package pages) ----"
             ls "$MOD" | grep -i '\.dll$' | sed 's/^/  /'
             echo
+            echo "---- LGPL libraries ----"
+            echo "CriFsV2Lib.dll, CriFsV2Lib.Definitions.dll (Sewer56), p5rpc.lib.interfaces.dll and"
+            echo "p5rpc.inputhook.interfaces.dll (AnimatedSwine37) are LGPL-3.0-or-later, shipped unmodified as separate"
+            echo "DLLs. Their source: ${ID}-${VER}-lgpl-sources.zip, published next to this build. Licence texts:"
+            echo "LGPL-3.0.txt and GPL-3.0.txt. Vortice.* and SharpGen.Runtime*: MIT."
+            echo
             echo "---- Package licences as recorded at build time ----"
             cat ../logs/2-nuget-licences.log 2>/dev/null || true
           } > "$OUT/NOTICE.txt"
-          cp "$OUT/LICENSE.txt" "$OUT/NOTICE.txt" "$MOD/"
+          cp "$OUT/LICENSE.txt" "$OUT/NOTICE.txt" "$OUT/LGPL-3.0.txt" "$OUT/GPL-3.0.txt" "$MOD/"
           (cd ../modsdir && 7z a -tzip -bso0 "../out/${ID}-${VER}-reloaded-mod.zip" p5rpc.personacraft)
           (cd "$OUT" && sha256sum -- * | sed 's/ \*/  /' > ../SHA256SUMS.txt) && mv ../SHA256SUMS.txt "$OUT/" && cat "$OUT/SHA256SUMS.txt"
 
@@ -146,7 +191,7 @@ jobs:
           {
             echo "upstream=${UPSTREAM}@${UPSTREAM_SHA}"
             echo "run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-            echo "dotnet=${{ steps.dotnet.outcome }} package=${{ steps.package.outcome }}"
+            echo "dotnet=${{ steps.dotnet.outcome }} lgpl=${{ steps.lgpl.outcome }} package=${{ steps.package.outcome }}"
           } > push/STATUS.txt
 
       - name: Upload them for the release job

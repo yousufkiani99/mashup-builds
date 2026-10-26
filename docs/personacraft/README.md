@@ -15,6 +15,12 @@ Unofficial build for the Mashup Library. Release tag `personacraft-v0.1.0` (crea
   Reloaded.Memory.SigScan.ReloadedII.Interfaces 1.2.0, p5rpc.lib.interfaces 1.1.0, p5rpc.inputhook.interfaces 1.0.0,
   CriFsV2Lib 2.1.2, Vortice.Direct3D11 / D3DCompiler 3.8.1). The libraries the mod needs at run time are in the mod
   folder as the build leaves them; each package's licence and SHA-256 is recorded in the build log and in NOTICE.txt.
+- **LGPL libraries:** four of those DLLs are LGPL-3.0-or-later and shipped unmodified: `CriFsV2Lib.dll` 2.1.2 and
+  `CriFsV2Lib.Definitions.dll` 1.1.0 (Sewer56/CriFsV2Lib tag `2.1.2` = `9bf3b9c`), `p5rpc.lib.interfaces.dll` 1.1.0
+  (AnimatedSwine37/p5rpc.lib tag `1.1.0` = `6cb4bda`), `p5rpc.inputhook.interfaces.dll` 1.0.0
+  (AnimatedSwine37/p5rpc.inputhook tag `1.0` = `ad78e4d`). Their source (each library project at the tag whose csproj
+  has the shipped version) is `personacraft-0.1.0-lgpl-sources.zip`, with the LGPL-3.0 and GPL-3.0 texts. Vortice.* and
+  SharpGen.Runtime* are MIT.
 - **Not built here:** the Minecraft side (SkyCraft's own jar).
 - **No game files:** Persona 5 Royal's data is read at run time from the player's own `BASE.CPK`.
 
@@ -22,7 +28,9 @@ Unofficial build for the Mashup Library. Release tag `personacraft-v0.1.0` (crea
 
 | File | What it is |
 | --- | --- |
-| `personacraft-0.1.0-reloaded-mod.zip` | `p5rpc.personacraft\` for Reloaded-II's Mods folder (ModConfig.json, the mod DLLs, LICENSE.txt, NOTICE.txt) |
+| `personacraft-0.1.0-reloaded-mod.zip` | `p5rpc.personacraft\` for Reloaded-II's Mods folder (ModConfig.json, the mod DLLs, LICENSE.txt, NOTICE.txt, LGPL-3.0.txt, GPL-3.0.txt) |
+| `personacraft-0.1.0-lgpl-sources.zip` | Source of the four LGPL-3.0-or-later libraries in the mod folder, at the shipped versions |
+| `LGPL-3.0.txt, GPL-3.0.txt` | Licence texts for those libraries |
 | `LICENSE.txt`, `NOTICE.txt` | Licence; what this is, credits, third-party notices |
 | `SHA256SUMS.txt` | SHA-256 of every file above (checked again before the release is made) |
 | `BUILD-LOG-SUMMARY.txt` | Status of each build step, the release checks and the build logs (written after the build, so not in SHA256SUMS.txt) |
