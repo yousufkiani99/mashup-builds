@@ -188,11 +188,11 @@ jobs:
             echo "${ID}-${VER}-mod.zip        charlystereo.PortalGun/ for OWML's Mods folder: OWPortalGun.dll, manifest.json,"
             echo "                            default-config.json (and OWPortalGun.pdb, debug symbols), LICENSE.txt, NOTICE.txt"
             echo "${ID}-${VER}-converter.zip  owpg-convert/ (owpg-convert.exe and its _internal/ folder: Python 3.12, numpy,"
-            echo "                            pillow), LICENSE.txt, NOTICE.txt"
+            echo "                            pillow, parts of setuptools pulled in by PyInstaller), LICENSE.txt, NOTICE.txt"
             echo
             echo "==== Python (bundled in the converter): LICENSE ===="
             cat "$(cygpath -u "$pythonLocation")/LICENSE.txt"; echo
-            for pkg in numpy pillow pyinstaller; do
+            for pkg in numpy pillow pyinstaller setuptools; do
               echo "==== ${pkg} (bundled in the converter): licence files ===="
               "../../../venv/Scripts/python" -I -c "import importlib.metadata as m, sys
           d = m.distribution(sys.argv[1]); print(d.metadata['Name'], d.version, '-', d.metadata.get('License-Expression') or d.metadata.get('License', '')[:200])
@@ -212,7 +212,7 @@ jobs:
           7z l "$OUT/${ID}-${VER}-mod.zip" | tee ../../../logs/5-zip-listing.txt
           7z l "$OUT/${ID}-${VER}-converter.zip" | tail -n 40 | tee -a ../../../logs/5-zip-listing.txt
           mkdir -p ../../../logs/raw && cp "$M/OWPortalGun.dll" ../../../logs/raw/
-          (cd "$OUT" && sha256sum -- * | sed 's/ \*/  /' > ../SHA256SUMS.txt) && mv ../SHA256SUMS.txt "$OUT/" && cat "$OUT/SHA256SUMS.txt"
+          (cd "$OUT" && sha256sum -- * | sed 's/ \*/  /' > ../SHA256SUMS.txt && mv ../SHA256SUMS.txt .) && cat "$OUT/SHA256SUMS.txt"
 
       - name: Collect files, logs and status (always)
         if: always()
