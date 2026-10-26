@@ -375,26 +375,40 @@ jobs:
           gh api "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | .html_url, (.assets[] | \"\(.name) \(.size)\")"
 
   failure-log:
-    # Only when the build fails: keeps the build job's log as a DRAFT release `debug-<id>-<run>` so it can be read
-    # without the Actions log viewer (delete those drafts once read). Runs none of the creator's code.
+    # Only when the build fails: keeps the build's logs (the artifact's logs/ and, when GitHub serves it, the job log)
+    # as a DRAFT release `debug-<id>-<run>` so they can be read without the Actions log viewer (delete those drafts
+    # once read). Runs none of the creator's code.
     needs: build
     if: failure() && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: write
       actions: read
     steps:
-      - name: Save the failed build's log as a draft
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: build-personacraft
+          path: build
+
+      - name: Save the failed build's logs as a draft
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          FILES=()
+          if [ -d build ]; then (cd build && zip -qr ../build-logs.zip STATUS.txt logs) && FILES+=(build-logs.zip); fi
           JID=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs" --jq '.jobs[] | select(.name == "build") | .id')
-          for i in 1 2 3 4 5 6; do gh api "repos/$GH_REPO/actions/jobs/$JID/logs" > build-job-log.txt && [ -s build-job-log.txt ] && break; sleep 10; done
-          tail -n 60 build-job-log.txt
+          for i in $(seq 1 12); do
+            if gh api "repos/$GH_REPO/actions/jobs/$JID/logs" > build-job-log.txt 2> err.txt && [ -s build-job-log.txt ]; then
+              FILES+=(build-job-log.txt); tail -n 80 build-job-log.txt; break
+            fi
+            cat err.txt; sleep 15
+          done
+          [ ${#FILES[@]} -gt 0 ] || { echo "no logs to save"; exit 1; }
           gh release create "debug-personacraft-$RUN_ID" --draft --target "$GITHUB_SHA" --title "debug log personacraft $RUN_ID (delete me)" \
-            --notes "Log of a failed build job, kept for reading. Not a release." build-job-log.txt
+            --notes "Logs of a failed build, kept for reading. Not a release." "${FILES[@]}"
