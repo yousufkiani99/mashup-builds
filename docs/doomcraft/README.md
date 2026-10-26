@@ -40,4 +40,16 @@ archives, Unity/game assemblies, Minecraft classes).
 
 ## Draft release
 
-Not built yet.
+Built by [run 40320527901](https://github.com/yousufkiani99/mashup-builds/actions/runs/40320527901) on 2026-10-26; draft release `doomcraft-v0.1.0`. Files downloaded from the draft and
+hashed again; every hash matches SHA256SUMS.txt.
+
+| File | Size (bytes) | SHA-256 |
+| --- | ---: | --- |
+| `BUILD-LOG-SUMMARY.txt` | 15,691 | `5c61a5bcd55dfd5dfe6bb7beae6d5f618b09f4896ceb5da273860598c01a2c2c` |
+| `doomcraft-0.1.0-runtime.zip` | 14,717,562 | `f08bdd72521a2a25308cbf87d6d7835e5ca93fe50403e8e7fc2bc121ed79cb42` |
+| `doomcraft-0.1.0-source.zip` | 225,365 | `d6f27775c0bb4b12d8d6c9536bd08f6fe04c618466395cbc3aa18fa25d444ba3` |
+| `DoomCraft-Engine-Source-0.1.0.zip` | 28,803,764 | `2d618100b2ec6e6fe5085cfb36dcc041ae866d7186d0b3b3fb07def8f10b3eb3` |
+| `LICENSE.txt` | 35,821 | `0b383d5a63da644f628d99c33976ea6487ed89aaa59f0b3257992deac1171e6b` |
+| `NOTICE.txt` | 18,999 | `e3e560926dec9bce2709f44f93fa4a31a506a1a402dffdf278b93a758492965c` |
+| `passthrough-0.1.0-doom.jar` | 288,060 | `7cb71120ee4addfb3e987345d8fd62eaa2bd63b42d0396d40d70a4f1bceb48fc` |
+| `SHA256SUMS.txt` | 535 | `18af62531f798b9c28658950f047f33b5b170df4a1ca3287ebaf7476ab660671` |

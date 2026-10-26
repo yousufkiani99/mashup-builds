@@ -3,7 +3,6 @@
 Unofficial build for the Mashup Library. Release tag `portal-gun-in-outer-wilds-v0.1.0` (created as a **draft**; published by hand after review).
 
 - **Source:** https://github.com/rehan-remade/universal-modder/tree/cda0d76649caa9d9ed6c8b980cdb36f4a4bdf9f8/examples/outer-wilds-portal-gun
-- **Pinned commit:** `cda0d76649caa9d9ed6c8b980cdb36f4a4bdf9f8`
 - **Licence:** MIT (Rehan and universal-modder contributors; example by charlystereo). LICENSE.txt and NOTICE.txt (credits, third-party notices) are in the release.
 - **Built unchanged:** the creator's code is never modified; the workflow checks the checkout is exactly the pinned commit.
 - **Workflow:** [`.github/workflows/build-portal-gun-in-outer-wilds.yml`](../../.github/workflows/build-portal-gun-in-outer-wilds.yml)
@@ -38,4 +37,14 @@ archives, Unity/game assemblies, Minecraft classes, the compile-time reference a
 
 ## Draft release
 
-Not built yet.
+Built by [run 40337988716](https://github.com/yousufkiani99/mashup-builds/actions/runs/40337988716) on 2026-10-26; draft release `portal-gun-in-outer-wilds-v0.1.0`. Files downloaded from the draft and
+hashed again; every hash matches SHA256SUMS.txt.
+
+| File | Size (bytes) | SHA-256 |
+| --- | ---: | --- |
+| `BUILD-LOG-SUMMARY.txt` | 52,126 | `24fbebdb3ab052a5220ec008a7fd5f710cb7a54f0743c518d9ac73c8aa6a68b7` |
+| `LICENSE.txt` | 1,117 | `1ed1271ce16c501b07bb712dc816864f354b93b6f95620203697e2f5bc2d5023` |
+| `NOTICE.txt` | 259,472 | `e8e8fb3705124c95b72b7f1f7e35294bf85f4e4d6b97ce61197d805268bd8dd6` |
+| `portal-gun-in-outer-wilds-0.1.0-converter.zip` | 27,895,262 | `8c3f0ed8b76225ea49cd00923bbded0f8e8562380f49f2b8e2e1c196eacd50b4` |
+| `portal-gun-in-outer-wilds-0.1.0-mod.zip` | 112,692 | `9e4b835197a8d0ec7bcb653e7dfe53c809113af28b612f5f9f7a5177e66ff1b9` |
+| `SHA256SUMS.txt` | 373 | `e59b0d9963598fd2643a1d84e9159ffbd491f68a072ad7ffeebb41b9418547c8` |

@@ -3,7 +3,6 @@
 Unofficial build for the Mashup Library. Release tag `palcraft-v0.2.2` (created as a **draft**; published by hand after review).
 
 - **Source:** https://github.com/EQQX0/PalCraft/tree/1431332b4cf75603e80cf4ce137347cebf880807
-- **Pinned commit:** `1431332b4cf75603e80cf4ce137347cebf880807`
 - **Licence:** MIT (PalCraft contributors; with siddoff's and justbustin's MIT notices). LICENSE.txt and NOTICE.txt (credits, third-party notices) are in the release.
 - **Built unchanged:** the creator's code is never modified; the workflow checks the checkout is exactly the pinned commit.
 - **Workflow:** [`.github/workflows/build-palcraft.yml`](../../.github/workflows/build-palcraft.yml)
@@ -31,4 +30,14 @@ archives, Unity/game assemblies, Minecraft classes).
 
 ## Draft release
 
-Not built yet.
+Built by [run 40324187634](https://github.com/yousufkiani99/mashup-builds/actions/runs/40324187634) on 2026-10-26; draft release `palcraft-v0.2.2`. Files downloaded from the draft and
+hashed again; every hash matches SHA256SUMS.txt.
+
+| File | Size (bytes) | SHA-256 |
+| --- | ---: | --- |
+| `BUILD-LOG-SUMMARY.txt` | 7,618 | `b4cd7f3a0b7369a9e94327c14cbe7cad2d58ea0db80b11853659ceabefcd8107` |
+| `LICENSE.txt` | 1,193 | `917e5850ae3c858c08a7cc931a64bb5e209fbac261abb962f1fa350b8a0949e7` |
+| `NOTICE.txt` | 1,707 | `ebcfe78fcb45f69d4a7ec2e67b4eef8e2d0b239349b1f40307effc5db8394646` |
+| `palcraft-0.2.2.jar` | 309,778 | `ffa782795ac97001c982c513b51830665a0763d65e2e5101a047422e2345007a` |
+| `PalCraft-0.2.2.zip` | 89,550 | `89b88fa6beaf02e2d4d408ffe3a0f0df07c9f95631a0809180e48b98c197b28c` |
+| `SHA256SUMS.txt` | 325 | `d19665b22bafe3fe0b0bd38652335f65f011db61ad5483f7360e8c68effc99ea` |

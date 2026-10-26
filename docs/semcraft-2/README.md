@@ -3,7 +3,6 @@
 Unofficial build for the Mashup Library. Release tag `semcraft-2-v0.1.0` (created as a **draft**; published by hand after review).
 
 - **Source:** https://github.com/animeliodas/SemCraft2/tree/66f022aa5f89f36c7e9019dda5b2a95c687248cd
-- **Pinned commit:** `66f022aa5f89f36c7e9019dda5b2a95c687248cd`
 - **Licence:** GPL-2.0 (animeliodas); the Minecraft frame exporter adapted from universal-modder is MIT. LICENSE.txt and NOTICE.txt (credits, third-party notices) are in the release.
 - **Built unchanged:** the creator's code is never modified; the workflow checks the checkout is exactly the pinned commit.
 - **Workflow:** [`.github/workflows/build-semcraft-2.yml`](../../.github/workflows/build-semcraft-2.yml)
@@ -37,4 +36,16 @@ archives, Unity/game assemblies, Minecraft classes).
 
 ## Draft release
 
-Not built yet.
+Built by [run 40323754308](https://github.com/yousufkiani99/mashup-builds/actions/runs/40323754308) on 2026-10-26; draft release `semcraft-2-v0.1.0`. Files downloaded from the draft and
+hashed again; every hash matches SHA256SUMS.txt.
+
+| File | Size (bytes) | SHA-256 |
+| --- | ---: | --- |
+| `BUILD-LOG-SUMMARY.txt` | 5,668 | `3be5a93f0ab9ad0086ac09477dc57fb866cc821bbc1b98b638da50b4b2c7a1cf` |
+| `LICENSE.txt` | 18,431 | `189b1af95d661151e054cea10c91b3d754e4de4d3fecfb074c1fb29476f7167b` |
+| `NOTICE.txt` | 4,975 | `376a5d0783859e175027e0c06f9fb4bc31805640fc4272806a0f0774dcea2d2e` |
+| `semcraft-2-0.1.0-source.zip` | 40,379,078 | `fef772555a69d7b3d2160ace18800e9d5e6e55874489f828b91efed199dde4bb` |
+| `semcraft-2-0.1.0-tfe.zip` | 352,570 | `20d6bf2a209b798629c980efc1031d13dfab1c31869b84761089e481acfe5f20` |
+| `semcraft-2-0.1.0-tse.zip` | 353,728 | `764e05c23e6b72ae2cf6a47dafa4255499056cc7bf3c40e0ba7b58a1e11acb1a` |
+| `semcraft2-0.1.0.jar` | 274,676 | `abc06a2398ce62638463c09bcebd3f6a69a7825180b39edca3954238b405ab27` |
+| `SHA256SUMS.txt` | 517 | `1dd7ae15998155325c4c8ea66bd37e70c249f266b7379a1171f6eb38b78ea3cf` |

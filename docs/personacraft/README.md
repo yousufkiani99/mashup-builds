@@ -41,4 +41,16 @@ archives, Unity/game assemblies, Minecraft classes).
 
 ## Draft release
 
-Not built yet.
+Built by [run 40319981665](https://github.com/yousufkiani99/mashup-builds/actions/runs/40319981665) on 2026-10-26; draft release `personacraft-v0.1.0`. Files downloaded from the draft and
+hashed again; every hash matches SHA256SUMS.txt.
+
+| File | Size (bytes) | SHA-256 |
+| --- | ---: | --- |
+| `BUILD-LOG-SUMMARY.txt` | 37,688 | `c9186daba640f41c1f1d428e51b96a15f78e5653cad6c9edd6d9b493e6df38c8` |
+| `GPL-3.0.txt` | 34,674 | `fb981668c18a279e285fc4d83fba1e836cc84dd4daa73c9697d3cfd2d8aca6e0` |
+| `LGPL-3.0.txt` | 42,098 | `996af0513df21f7496288951c41428a03c174e9e4a9d63665c57d670f845ccb1` |
+| `LICENSE.txt` | 1,196 | `0ef3746e997e61dfd89d777822bb97e68ff4d0cd6a48256e13ebdd8ab56a1440` |
+| `NOTICE.txt` | 6,686 | `c123885d80dd4d3115bbe914e42e5f7668f84c9cd9b139cbb13b942c16545bf2` |
+| `personacraft-0.1.0-lgpl-sources.zip` | 181,597 | `5281491db916069f5231f2261e0567e6fec2ed90acfa4cebbc092f88dc71fd32` |
+| `personacraft-0.1.0-reloaded-mod.zip` | 689,889 | `87ff2e8ba5a35adf37e5e1243d8741c8498161770d84225ae0763bac0422105d` |
+| `SHA256SUMS.txt` | 516 | `531031973f3db357846e2fdec4087d72a09d660a2b3a3726536eb841474f553d` |
