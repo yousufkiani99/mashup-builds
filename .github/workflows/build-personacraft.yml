@@ -373,3 +373,28 @@ jobs:
           printf '%s\n' "${FILES[@]}"
           gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "$TITLE $VER" --notes-file ../notes.md "${FILES[@]}"
           gh api "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | .html_url, (.assets[] | \"\(.name) \(.size)\")"
+
+  failure-log:
+    # Only when the build fails: keeps the build job's log as a DRAFT release `debug-<id>-<run>` so it can be read
+    # without the Actions log viewer (delete those drafts once read). Runs none of the creator's code.
+    needs: build
+    if: failure() && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Save the failed build's log as a draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          JID=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs" --jq '.jobs[] | select(.name == "build") | .id')
+          for i in 1 2 3 4 5 6; do gh api "repos/$GH_REPO/actions/jobs/$JID/logs" > build-job-log.txt && [ -s build-job-log.txt ] && break; sleep 10; done
+          tail -n 60 build-job-log.txt
+          gh release create "debug-personacraft-$RUN_ID" --draft --target "$GITHUB_SHA" --title "debug log personacraft $RUN_ID (delete me)" \
+            --notes "Log of a failed build job, kept for reading. Not a release." build-job-log.txt
