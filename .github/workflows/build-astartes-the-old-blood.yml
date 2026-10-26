@@ -1,0 +1,323 @@
+# BUILD: Astartes - The Old Blood 1.0.4 -> DRAFT release astartes-the-old-blood-v1.0.4 of this repo.
+# Astartes: The Old Blood by Sebianer (Wolfenstein: The Old Blood + Space Marine 2 classes, GPL-3.0), built unchanged
+# at a pinned commit with the creator's own steps from tools/package.sh: `python -I tools/gen.py` (no Space Marine 2
+# folder: it reuses the committed sheets/sfx_resolved.json), hook/build.sh (MSVC cl x64 + MinHook -> dinput8.dll)
+# and the .NET Framework csc command -> AstartesLauncher.exe. tools/msvc.bat calls VS 2019 Build Tools' vcvars64.bat
+# by a fixed path the runner doesn't have; the MSVC x64 environment comes from ilammy/msvc-dev-cmd instead, so
+# msvc.bat's `%*` runs the same cl command line. vgmstream is left out. No game files.
+#
+# Two jobs: `build` runs the creator's build on a Windows runner with a read-only token and uploads the files
+# as an artifact; `release` runs none of that code: it checks SHA256SUMS.txt, LICENSE/NOTICE, the GPL source
+# and that no game file is in any file or archive, then makes a DRAFT release (published by hand after review).
+# Started by hand: gh api -X POST repos/yousufkiani99/mashup-builds/actions/workflows/build-astartes-the-old-blood.yml/dispatches
+# -f ref=<branch>. The push trigger only registers the workflow; on a push both jobs are skipped.
+name: Build - Astartes - The Old Blood
+
+on:
+  push:
+    branches: ['builds/wave2']
+    paths: ['.github/workflows/build-astartes-the-old-blood.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    timeout-minutes: 45
+    env:
+      ID: astartes-the-old-blood
+      VER: 1.0.4
+      UPSTREAM: Sebianer/astartes-old-blood
+      UPSTREAM_SHA: ca7244a65b8e9fcac713cce822eaea5dd51c7d48
+    defaults:
+      run:
+        working-directory: upstream
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Sebianer/astartes-old-blood
+          ref: ca7244a65b8e9fcac713cce822eaea5dd51c7d48
+          path: upstream
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Logs folder
+        shell: bash
+        working-directory: .
+        run: |
+          mkdir -p logs out
+          test "$(git -C upstream rev-parse HEAD)" = "$UPSTREAM_SHA"   # the pinned commit, nothing else
+          git -C upstream log -1 --format='upstream %H %ci %s' | tee logs/0-upstream.txt
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check the sheets and generate (python -I tools/gen.py)
+        id: gen
+        shell: bash
+        run: |
+          set -o pipefail
+          python -I tools/gen.py 2>&1 | tee ../logs/0-gen.log
+          git status --porcelain --untracked-files=no | tee -a ../logs/0-gen.log
+          git diff --quiet || { echo "generated files differ from the commit"; exit 1; }
+
+      - name: Build dinput8.dll (sh hook/build.sh)
+        id: hook
+        shell: bash
+        run: |
+          set -o pipefail
+          sh hook/build.sh 2>&1 | tee ../logs/1-hook.log
+          cat build/hook.log >> ../logs/1-hook.log 2>/dev/null || true
+          test -f build/dinput8.dll
+
+      - name: Build AstartesLauncher.exe (.NET Framework csc, as tools/package.sh)
+        id: launcher
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p build/AstartesOldBlood
+          /c/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe -nologo -target:winexe -optimize '-out:build\AstartesOldBlood\AstartesLauncher.exe' \
+            -r:System.Windows.Forms.dll -r:System.Drawing.dll -r:System.Core.dll 'launcher\*.cs' 2>&1 | tee ../logs/2-csc.log
+          test -f build/AstartesOldBlood/AstartesLauncher.exe
+
+      - name: Package the release files and the source
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=../out; P=../stage/package; rm -rf ../stage; mkdir -p "$P/AstartesOldBlood"
+          cp LICENSE "$OUT/LICENSE.txt"
+          {
+            echo "Astartes: The Old Blood ${VER} - unofficial community build"
+            echo
+            echo "What this is: a ready-made build of Astartes: The Old Blood by Sebianer, https://github.com/${UPSTREAM},"
+            echo "compiled unchanged from commit ${UPSTREAM_SHA} by GitHub Actions (windows-latest; MSVC cl x64 with MinHook"
+            echo "for dinput8.dll, .NET Framework 4 csc for AstartesLauncher.exe). It is NOT an official release: it is a"
+            echo "community build made for the Mashup Library app under the GNU GPL v3 (LICENSE.txt). The source is"
+            echo "${ID}-${VER}-source.zip (the repo at the pinned commit), published next to it. Report problems with this"
+            echo "build to the Mashup Library, not to Sebianer."
+            echo
+            echo "Single player. Made for Wolfenstein: The Old Blood on Steam. Reads class cards and voice lines from your own"
+            echo "Warhammer 40,000: Space Marine 2 install (read only; Space Marine 2 is never started or changed). Needs"
+            echo "vgmstream r2117 (installed separately from its official release, not included)."
+            echo
+            echo "Credits: Sebianer; Tsuda Kageyu (MinHook, BSD-2-Clause); the vgmstream team (used at run time)."
+            echo "Not affiliated with MachineGames, Bethesda, Saber Interactive, Focus Entertainment or Games Workshop."
+            echo "No game files are included."
+            echo
+            echo "---- Files ----"
+            echo "${ID}-${VER}.zip unpacks into the Old Blood folder: dinput8.dll; AstartesOldBlood/ (AstartesLauncher.exe,"
+            echo "  README.txt, LICENSE.txt, LICENSE-minhook.txt, NOTICE.txt). AstartesOldBlood/vgmstream/ is not included."
+          } > "$OUT/NOTICE.txt"
+          cp build/dinput8.dll "$P/"
+          cp build/AstartesOldBlood/AstartesLauncher.exe tools/README.txt "$P/AstartesOldBlood/"
+          cp third_party/minhook/LICENSE.txt "$P/AstartesOldBlood/LICENSE-minhook.txt"
+          cp LICENSE "$P/AstartesOldBlood/LICENSE.txt"; cp "$OUT/NOTICE.txt" "$P/AstartesOldBlood/"
+          (cd "$P" && 7z a -tzip -bso0 "../../out/${ID}-${VER}.zip" .)
+          git archive --format=zip --prefix="astartes-old-blood-${UPSTREAM_SHA::7}/" -o "$OUT/${ID}-${VER}-source.zip" HEAD
+          mkdir -p ../logs/raw && cp build/dinput8.dll build/AstartesOldBlood/AstartesLauncher.exe ../logs/raw/
+          (cd "$OUT" && sha256sum -- * | sed 's/ \*/  /' > ../SHA256SUMS.txt) && mv ../SHA256SUMS.txt "$OUT/" && cat "$OUT/SHA256SUMS.txt"
+
+      - name: Collect files, logs and status (always)
+        if: always()
+        shell: bash
+        working-directory: .
+        run: |
+          set -euo pipefail
+          mkdir -p push && cp -r out/. push/ 2>/dev/null || true
+          mkdir -p push/logs && cp -r logs/. push/logs/ 2>/dev/null || true
+          {
+            echo "upstream=${UPSTREAM}@${UPSTREAM_SHA}"
+            echo "run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "gen=${{ steps.gen.outcome }} hook=${{ steps.hook.outcome }} launcher=${{ steps.launcher.outcome }} package=${{ steps.package.outcome }}"
+          } > push/STATUS.txt
+
+      - name: Upload them for the release job
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-astartes-the-old-blood
+          path: push/
+          if-no-files-found: error
+          retention-days: 3
+
+  release:
+    # Runs none of the creator's code (no checkout, nothing from the artifact is executed): checks the files, then
+    # makes a DRAFT release. Publishing is done by hand after review.
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      ID: astartes-the-old-blood
+      VER: 1.0.4
+      TAG: astartes-the-old-blood-v1.0.4
+      TITLE: "Astartes - The Old Blood"
+      UPSTREAM: Sebianer/astartes-old-blood
+      UPSTREAM_SHA: ca7244a65b8e9fcac713cce822eaea5dd51c7d48
+      LICENCE: GPL-3.0
+      GPL: 'yes'
+      OWN_DLLS: ''
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-astartes-the-old-blood
+          path: build
+
+      - name: Check the files (SHA256SUMS, licence and notice, GPL source, no game files)
+        shell: bash
+        working-directory: build
+        run: |
+          set -euo pipefail
+          cat STATUS.txt
+          python3 -I - > ../check.log 2>&1 <<'EOF' || { cat ../check.log; exit 1; }
+          import hashlib, os, re, sys, zipfile
+          def sha(b): return hashlib.sha256(b).hexdigest()
+          files = sorted(f for f in os.listdir('.') if os.path.isfile(f) and f != 'STATUS.txt')
+          bad = []
+          for n in ('SHA256SUMS.txt', 'LICENSE.txt', 'NOTICE.txt'):
+              if n not in files: bad.append('missing ' + n)
+          sums = {}
+          for line in open('SHA256SUMS.txt', encoding='utf-8'):
+              line = line.rstrip('\r\n')
+              if line:
+                  h, name = line.split('  ', 1); sums[name] = h
+          present = set(files) - {'SHA256SUMS.txt'}
+          if set(sums) != present: bad.append('SHA256SUMS.txt and the files differ: %s' % sorted(set(sums) ^ present))
+          for name, h in sorted(sums.items()):
+              ok = name in present and sha(open(name, 'rb').read()) == h
+              print('%-8s %s %s' % ('ok' if ok else 'MISMATCH', h, name))
+              if not ok: bad.append('hash mismatch: ' + name)
+          if os.environ['GPL'] == 'yes' and not any(f.lower().endswith('source.zip') or 'source' in f.lower() for f in files):
+              bad.append('GPL build without its source zip')
+          # No game files: game data archives, Unity/game assemblies, Minecraft classes, and (when the build job listed them)
+          # the compile-time reference assemblies, by name and by SHA-256.
+          GAME_EXT = {'.wad', '.iwad', '.esm', '.esl', '.bsa', '.ba2', '.cpk', '.vpk', '.pak', '.utoc', '.ucas', '.uasset',
+                      '.uexp', '.umap', '.bdt', '.bhd', '.dcx', '.gpk', '.forge', '.rpf'}
+          GAME_DLL = re.compile(r'^(assembly-csharp.*|unityengine.*|unity\..*|mono\.cecil.*)\.dll$')
+          forbidden_sha, forbidden_name = {}, set()
+          if os.path.exists('logs/forbidden-assemblies.txt'):
+              for line in open('logs/forbidden-assemblies.txt', encoding='utf-8'):
+                  p = line.split()
+                  if len(p) >= 2: forbidden_sha[p[0]] = p[1]; forbidden_name.add(p[1].lower())
+              print('reference assemblies that must not ship: %d' % len(forbidden_sha))
+          own = {n.lower() for n in os.environ.get('OWN_DLLS', '').split()}
+          def check(container, name, data):
+              base = name.replace('\\', '/').rsplit('/', 1)[-1].lower()
+              where = container if container == name else container + ':' + name
+              if os.path.splitext(base)[1] in GAME_EXT: bad.append('game data file: ' + where)
+              if GAME_DLL.match(base): bad.append('game assembly: ' + where)
+              if base in forbidden_name and base not in own: bad.append('reference assembly (by name): ' + where)
+              if sha(data) in forbidden_sha: bad.append('reference assembly (by SHA-256): ' + where)
+              if container.endswith('.jar') and container != name and re.match(r'(net/minecraft|com/mojang)/', name):
+                  bad.append('Minecraft class: ' + where)
+          n = 0
+          for f in files:
+              data = open(f, 'rb').read(); check(f, f, data); n += 1
+              if f.lower().endswith(('.zip', '.jar')):
+                  with zipfile.ZipFile(f) as z:
+                      for i in z.infolist():
+                          if i.is_dir(): continue
+                          d = z.read(i); check(f, i.filename, d); n += 1
+                          if i.filename.lower().endswith('.jar'):
+                              import io
+                              with zipfile.ZipFile(io.BytesIO(d)) as j:
+                                  for k in j.infolist():
+                                      if not k.is_dir(): check(i.filename, k.filename, j.read(k)); n += 1
+          print('checked %d files and archive entries' % n)
+          for b in bad: print('PROBLEM', b)
+          sys.exit(1 if bad else 0)
+          EOF
+          cat ../check.log
+
+      - name: Write the build log summary
+        shell: bash
+        working-directory: build
+        run: |
+          set -euo pipefail
+          python3 -I - <<'EOF'
+          import hashlib, os
+          out = open('BUILD-LOG-SUMMARY.txt', 'w', encoding='utf-8', newline='\n')
+          w = lambda s='': out.write(s + '\n')
+          w('Build log summary: %s %s (%s)' % (os.environ['TITLE'], os.environ['VER'], os.environ['TAG']))
+          w('Workflow run: %s' % os.environ['RUN_URL'])
+          w('Workflow commit: %s' % os.environ['GITHUB_SHA'])
+          w('This file is not listed in SHA256SUMS.txt: it is written after the build, from the build job\'s logs.')
+          w()
+          w('==== STATUS.txt ====')
+          w(open('STATUS.txt', encoding='utf-8', errors='replace').read().rstrip())
+          w()
+          w('==== release checks ====')
+          w(open('../check.log', encoding='utf-8', errors='replace').read().rstrip())
+          logs = []
+          for d, _, fs in os.walk('logs'):
+              for f in fs: logs.append(os.path.join(d, f).replace('\\', '/'))
+          for p in sorted(logs):
+              size = os.path.getsize(p)
+              if p.startswith('logs/raw/') or not p.endswith(('.log', '.txt', '.json')):
+                  w(); w('==== %s (%d bytes, sha256 %s; binary copy kept for checking, not shown) ====' % (
+                      p, size, hashlib.sha256(open(p, 'rb').read()).hexdigest()))
+                  continue
+              lines = open(p, encoding='utf-8', errors='replace').read().splitlines()
+              w()
+              if size <= 24000:
+                  w('==== %s (%d bytes) ====' % (p, size)); [w(l) for l in lines]
+              else:
+                  w('==== %s (%d bytes, %d lines: first 40 and last 150 shown) ====' % (p, size, len(lines)))
+                  [w(l) for l in lines[:40]]; w('[...]'); [w(l) for l in lines[-150:]]
+          out.close()
+          EOF
+          wc -c BUILD-LOG-SUMMARY.txt
+
+      - name: Make the DRAFT release astartes-the-old-blood-v1.0.4
+        shell: bash
+        working-directory: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # A draft left by an earlier try of this workflow is replaced; a published release is never touched.
+          gh api "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | [.id, .draft] | @tsv" > ../existing.tsv
+          while IFS=$'\t' read -r RID DRAFT; do
+            [ -n "$RID" ] || continue
+            if [ "$DRAFT" = "true" ]; then gh api -X DELETE "repos/$GH_REPO/releases/$RID"; echo "deleted old draft $RID"
+            else echo "$TAG is already published; not touching it"; exit 1; fi
+          done < ../existing.tsv
+          if git ls-remote --exit-code --tags "https://github.com/$GH_REPO.git" "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "tag $TAG already exists"; exit 1
+          fi
+          {
+            echo "**DRAFT, not published.** Unofficial community build for the Mashup Library."
+            echo
+            echo "Astartes: The Old Blood 1.0.4 by Sebianer (Wolfenstein: The Old Blood + Space Marine 2 classes), compiled unchanged from the pinned commit with the creator's tools/package.sh steps (gen.py, hook/build.sh with MSVC x64, .NET Framework csc)."
+            echo
+            echo "- Source: https://github.com/${UPSTREAM}/tree/${UPSTREAM_SHA}"
+            echo "- Licence: ${LICENCE} (LICENSE.txt; credits and third-party notices in NOTICE.txt)"
+            [ "$GPL" = yes ] && echo "- Complete corresponding source: astartes-the-old-blood-1.0.4-source.zip (the repo at the pinned commit)"
+            echo "- Built by: ${RUN_URL} (workflow \`.github/workflows/build-${ID}.yml\` at ${GITHUB_SHA})"
+            echo "- Details: https://github.com/${GH_REPO}/blob/${GITHUB_SHA}/docs/${ID}/README.md"
+            echo "- No game files are included."
+            echo
+            echo "SHA-256 (SHA256SUMS.txt):"
+            echo '```'
+            cat SHA256SUMS.txt
+            echo '```'
+          } > ../notes.md
+          FILES=(); for f in *; do if [ -f "$f" ] && [ "$f" != STATUS.txt ]; then FILES+=("$f"); fi; done
+          printf '%s\n' "${FILES[@]}"
+          gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "$TITLE $VER" --notes-file ../notes.md "${FILES[@]}"
+          gh api "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | .html_url, (.assets[] | \"\(.name) \(.size)\")"

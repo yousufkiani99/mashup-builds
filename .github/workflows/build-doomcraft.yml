@@ -1,0 +1,408 @@
+# BUILD: DoomCraft 0.1.0 -> DRAFT release doomcraft-v0.1.0 of this repo.
+# DoomCraft by roryekay (DOOM in a patched GZDoom 4.14.2 + Minecraft 26.3; engine patch GPL-3.0-or-later, Minecraft
+# mod MIT), release v0.1.0 (commit 594aaa6). Route: the creator's own binaries, byte for byte. They exist only inside
+# his Inno Setup installer; this job downloads it from his v0.1.0 release (pinned SHA-256), unpacks it with the
+# creator's documented extraction-only mode (/VERYSILENT /SMOKETEST=1) into a temporary folder, and checks every file
+# against his payload-sha256.json (pinned SHA-256). The GPL corresponding source is the creator's
+# DoomCraft-Engine-Source-0.1.0.zip (pinned SHA-256), published next to the build unchanged, plus a source archive
+# of the repo at the pinned commit. As a cross-check only (not shipped), the Minecraft mod is also built from the
+# pinned commit and compared with the creator's jar entry by entry.
+# No game files: the installer's payload list is checked, and the job fails on any .wad.
+#
+# Two jobs: `build` runs the creator's build on a Windows runner with a read-only token and uploads the files
+# as an artifact; `release` runs none of that code: it checks SHA256SUMS.txt, LICENSE/NOTICE, the GPL source
+# and that no game file is in any file or archive, then makes a DRAFT release (published by hand after review).
+# Started by hand: gh api -X POST repos/yousufkiani99/mashup-builds/actions/workflows/build-doomcraft.yml/dispatches
+# -f ref=<branch>. The push trigger only registers the workflow; on a push both jobs are skipped.
+name: Build - DoomCraft
+
+on:
+  push:
+    branches: ['builds/wave2']
+    paths: ['.github/workflows/build-doomcraft.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    timeout-minutes: 45
+    env:
+      ID: doomcraft
+      VER: 0.1.0
+      UPSTREAM: roryekay/doomcraft
+      UPSTREAM_SHA: 594aaa6193a5cb0878ce62800dc0ab5cadfe3b68
+      REL: https://github.com/roryekay/doomcraft/releases/download/v0.1.0
+      SETUP: DoomCraft-Setup-0.1.0-Windows-x64.exe
+      SETUP_SHA256: a07094ff91f739fba73a067ab087c1c5bbfffaa35009fcbca5155f164189e042
+      ENGINE_SRC: DoomCraft-Engine-Source-0.1.0.zip
+      ENGINE_SRC_SHA256: 2d618100b2ec6e6fe5085cfb36dcc041ae866d7186d0b3b3fb07def8f10b3eb3
+      PAYLOAD_SHA256: 28cf69d81fbc0f6a7e24c94c201e656b38c871c46fc38993b02e49e2ec14b9aa
+    defaults:
+      run:
+        working-directory: upstream
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: roryekay/doomcraft
+          ref: 594aaa6193a5cb0878ce62800dc0ab5cadfe3b68
+          path: upstream
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Logs folder
+        shell: bash
+        working-directory: .
+        run: |
+          mkdir -p logs out dl
+          test "$(git -C upstream rev-parse HEAD)" = "$UPSTREAM_SHA"   # the pinned commit, nothing else
+          git -C upstream log -1 --format='upstream %H %ci %s' | tee logs/0-upstream.txt
+
+      - name: Download the creator's v0.1.0 release files (pinned SHA-256)
+        id: download
+        shell: bash
+        working-directory: dl
+        run: |
+          set -euo pipefail
+          for f in "$SETUP" "$ENGINE_SRC" payload-sha256.json SHA256SUMS.txt; do
+            curl -fsSL --retry 3 -o "$f" "$REL/$f"
+          done
+          printf '%s  %s\n' "$SETUP_SHA256" "$SETUP" "$ENGINE_SRC_SHA256" "$ENGINE_SRC" "$PAYLOAD_SHA256" payload-sha256.json \
+            | sha256sum -c - | tee ../logs/1-download.log
+          echo "== the creator's SHA256SUMS.txt" >> ../logs/1-download.log
+          cat SHA256SUMS.txt >> ../logs/1-download.log
+          sha256sum -c SHA256SUMS.txt | tee -a ../logs/1-download.log
+
+      - name: Unpack the installer (creator's extraction-only mode)
+        id: unpack
+        shell: pwsh
+        working-directory: .
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:RUNNER_TEMP 'doomcraft-payload'
+          $log = Join-Path $PWD 'logs\2-inno-setup.log'
+          $p = Start-Process -FilePath "dl\$env:SETUP" -Wait -PassThru -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SMOKETEST=1', "/DIR=$dir", "/LOG=$log")
+          "exit code $($p.ExitCode)" | Tee-Object -Append logs\2-inno-setup.log
+          if ($p.ExitCode -ne 0) { throw "setup failed: $($p.ExitCode)" }
+          "PAYLOAD_DIR=$dir" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: Check every unpacked file against the creator's payload-sha256.json
+        id: verify
+        shell: bash
+        working-directory: .
+        run: |
+          set -euo pipefail
+          P="$(cygpath -u "$PAYLOAD_DIR")"
+          (cd "$P" && find . -type f | sed 's|^\./||' | sort) > logs/3-unpacked-files.txt
+          python -I - "$P" dl/payload-sha256.json <<'EOF' | tee logs/3-verify.log
+          import hashlib, json, pathlib, sys
+          root = pathlib.Path(sys.argv[1]); want = json.load(open(sys.argv[2]))
+          got = {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in root.rglob('*') if p.is_file()}
+          bad = 0
+          for name, h in sorted(want.items()):
+              ok = got.get(name) == h
+              bad += not ok
+              print(('ok      ' if ok else 'MISMATCH'), name, got.get(name, 'missing'))
+          extra = sorted(set(got) - set(want))
+          for name in extra: print('extra   ', name, got[name])
+          if any(n.lower().endswith(('.wad', '.iwad')) for n in got): print('a WAD file is in the payload'); bad += 1
+          print(f'{len(want)} listed, {len(got)} unpacked, {bad} problems, {len(extra)} extra')
+          sys.exit(1 if bad else 0)
+          EOF
+
+      # Cross-check only: the payload's text files are the repo's at the pinned commit, and the creator's jar holds
+      # the same classes as a build of mc/ at the pinned commit. Nothing from these builds is shipped.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - uses: gradle/actions/setup-gradle@v4 # checks gradle-wrapper.jar is genuine
+
+      - name: Cross-check - build the Minecraft mod from the pinned commit and compare
+        id: crosscheck
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          P="$(cygpath -u "$PAYLOAD_DIR")"
+          for f in launch.ps1 doomcraft.cfg CONTROLS.md THIRD_PARTY.md LICENSE installer/play.ps1 installer/setup.ps1 \
+                   installer/README.md installer/downloads.json installer/fabric-profile.json licenses/MIT-passthrough.txt; do
+            if cmp -s "$f" "$P/$f"; then echo "same as repo  $f"; else echo "DIFFERS       $f"; fi
+          done > ../logs/4-crosscheck.log
+          (cd mc && ./gradlew --no-daemon --no-configuration-cache build) > ../logs/4-gradle.log 2>&1
+          echo "gradle exit $?" >> ../logs/4-crosscheck.log
+          ls -la mc/build/libs >> ../logs/4-crosscheck.log 2>&1
+          JAR=$(ls mc/build/libs/*.jar | grep -v -E -- '-(sources|dev)\.jar$' | head -1)
+          python -I - "$P/guest/passthrough-0.1.0-doom.jar" "$JAR" <<'EOF' >> ../logs/4-crosscheck.log
+          import hashlib, sys, zipfile
+          def entries(p):
+              with zipfile.ZipFile(p) as z:
+                  return {i.filename: hashlib.sha256(z.read(i)).hexdigest() for i in z.infolist() if not i.is_dir()}
+          a, b = entries(sys.argv[1]), entries(sys.argv[2])
+          same = sum(1 for k in a if b.get(k) == a[k])
+          print(f'creator jar {len(a)} entries, our build {len(b)} entries, {same} identical')
+          for k in sorted(set(a) | set(b)):
+              if a.get(k) != b.get(k): print('  differs:', k, 'creator' if k in a else '-', 'ours' if k in b else '-')
+          EOF
+          cat ../logs/4-crosscheck.log
+
+      - name: Package the release files
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          P="$(cygpath -u "$PAYLOAD_DIR")"; OUT=../out; RT=../stage/runtime
+          rm -rf ../stage; mkdir -p "$RT"
+          for f in gzdoom.exe doomcraft.pk3 gzdoom.pk3 brightmaps.pk3 lights.pk3 game_support.pk3 game_widescreen_gfx.pk3; do
+            cp "$P/local/runtime/$f" "$RT/"
+          done
+          cp "$P/doomcraft.cfg" "$P/CONTROLS.md" "$P/THIRD_PARTY.md" ../stage/
+          cp "$P/LICENSE" "$OUT/LICENSE.txt"
+          cp "$P/guest/passthrough-0.1.0-doom.jar" "$OUT/"
+          cp ../dl/"$ENGINE_SRC" "$OUT/"
+          git archive --format=zip --prefix="doomcraft-${UPSTREAM_SHA::7}/" -o "$OUT/${ID}-${VER}-source.zip" "$UPSTREAM_SHA"
+          {
+            echo "DoomCraft ${VER} - unofficial community copy of the creator's release files"
+            echo
+            echo "What this is: the files of DoomCraft ${VER} by roryekay, https://github.com/${UPSTREAM} (release v0.1.0,"
+            echo "commit ${UPSTREAM_SHA}), taken byte for byte out of the creator's own installer ${SETUP}"
+            echo "(SHA-256 ${SETUP_SHA256}) and checked against the creator's payload-sha256.json. Nothing was"
+            echo "recompiled or changed. It is NOT an official release: it is a community copy made for the Mashup"
+            echo "Library app, so the files can be installed without the creator's installer. Report problems with this"
+            echo "copy to the Mashup Library, not to roryekay."
+            echo
+            echo "Licences: the patched GZDoom engine (gzdoom.exe and its .pk3 resources) is GPL-3.0-or-later"
+            echo "(LICENSE.txt). Its complete corresponding source is ${ENGINE_SRC}, published next to these files"
+            echo "exactly as the creator published it (SHA-256 ${ENGINE_SRC_SHA256}): GZDoom g4.14.2"
+            echo "(ZDoom/gzdoom @ 99aa489d09015a95bb78df2b30ede29f328cc874) plus DoomCraft's native code and patch-engine.py."
+            echo "The Minecraft mod (passthrough-0.1.0-doom.jar) is MIT (Rehan and universal-modder contributors, AZP3001,"
+            echo "roryekay); its source is in ${ID}-${VER}-source.zip (the repo at the pinned commit)."
+            echo
+            echo "Not included: GZDoom's stock runtime DLLs and sound font (get them from GZDoom's official release"
+            echo "gzdoom-4-14-2-windows.zip, SHA-256 6d01c5bb48610cebfa9dfd0b7705a1e20bfd56032a74484ac256d8c4e3c51bee),"
+            echo "Fabric, Minecraft, and any DOOM data. Use your own DOOM.WAD / DOOM2.WAD (Steam: DOOM + DOOM II, base folder)."
+            echo
+            echo "NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT."
+            echo "Not affiliated with id Software, Bethesda or the GZDoom team. No game files are included."
+            echo
+            echo "---- Files ----"
+            echo "${ID}-${VER}-runtime.zip         runtime/gzdoom.exe (patched GZDoom 4.14.2), runtime/doomcraft.pk3,"
+            echo "                                 runtime/gzdoom.pk3, brightmaps.pk3, lights.pk3, game_support.pk3,"
+            echo "                                 game_widescreen_gfx.pk3; doomcraft.cfg; CONTROLS.md; THIRD_PARTY.md;"
+            echo "                                 LICENSE.txt, NOTICE.txt"
+            echo "passthrough-0.1.0-doom.jar       the Fabric mod for Minecraft 26.3 (Fabric Loader 0.19.5, Fabric API"
+            echo "                                 0.161.0+26.3, installed separately)"
+            echo "${ENGINE_SRC}  GPL corresponding source of the engine (the creator's file, unchanged)"
+            echo "${ID}-${VER}-source.zip          the repo at commit ${UPSTREAM_SHA}"
+            echo
+            echo "---- Checked against the creator's payload-sha256.json ----"
+            grep -E '^(ok|MISMATCH|extra)' ../logs/3-verify.log
+            echo
+            echo "==== THIRD_PARTY.md ===="; cat "$P/THIRD_PARTY.md"; echo
+            echo "==== licenses/MIT-passthrough.txt ===="; cat "$P/licenses/MIT-passthrough.txt"; echo
+            echo "==== licenses/Apache-2.0.txt (Gradle wrapper) ===="; cat "$P/licenses/Apache-2.0.txt"; echo
+          } > "$OUT/NOTICE.txt"
+          cp "$OUT/LICENSE.txt" "$OUT/NOTICE.txt" ../stage/
+          (cd ../stage && 7z a -tzip -bso0 "../out/${ID}-${VER}-runtime.zip" .)
+          (cd "$OUT" && sha256sum -- * | sed 's/ \*/  /' > ../SHA256SUMS.txt) && mv ../SHA256SUMS.txt "$OUT/" && cat "$OUT/SHA256SUMS.txt"
+
+      - name: Collect files, logs and status (always)
+        if: always()
+        shell: bash
+        working-directory: .
+        run: |
+          set -euo pipefail
+          mkdir -p push && cp -r out/. push/ 2>/dev/null || true
+          mkdir -p push/logs && cp -r logs/. push/logs/ 2>/dev/null || true
+          {
+            echo "upstream=${UPSTREAM}@${UPSTREAM_SHA}"
+            echo "run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "download=${{ steps.download.outcome }} unpack=${{ steps.unpack.outcome }} verify=${{ steps.verify.outcome }} crosscheck=${{ steps.crosscheck.outcome }} package=${{ steps.package.outcome }}"
+          } > push/STATUS.txt
+
+      - name: Upload them for the release job
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-doomcraft
+          path: push/
+          if-no-files-found: error
+          retention-days: 3
+
+  release:
+    # Runs none of the creator's code (no checkout, nothing from the artifact is executed): checks the files, then
+    # makes a DRAFT release. Publishing is done by hand after review.
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      ID: doomcraft
+      VER: 0.1.0
+      TAG: doomcraft-v0.1.0
+      TITLE: "DoomCraft"
+      UPSTREAM: roryekay/doomcraft
+      UPSTREAM_SHA: 594aaa6193a5cb0878ce62800dc0ab5cadfe3b68
+      LICENCE: GPL-3.0-or-later AND MIT
+      GPL: 'yes'
+      OWN_DLLS: ''
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-doomcraft
+          path: build
+
+      - name: Check the files (SHA256SUMS, licence and notice, GPL source, no game files)
+        shell: bash
+        working-directory: build
+        run: |
+          set -euo pipefail
+          cat STATUS.txt
+          python3 -I - > ../check.log 2>&1 <<'EOF' || { cat ../check.log; exit 1; }
+          import hashlib, os, re, sys, zipfile
+          def sha(b): return hashlib.sha256(b).hexdigest()
+          files = sorted(f for f in os.listdir('.') if os.path.isfile(f) and f != 'STATUS.txt')
+          bad = []
+          for n in ('SHA256SUMS.txt', 'LICENSE.txt', 'NOTICE.txt'):
+              if n not in files: bad.append('missing ' + n)
+          sums = {}
+          for line in open('SHA256SUMS.txt', encoding='utf-8'):
+              line = line.rstrip('\r\n')
+              if line:
+                  h, name = line.split('  ', 1); sums[name] = h
+          present = set(files) - {'SHA256SUMS.txt'}
+          if set(sums) != present: bad.append('SHA256SUMS.txt and the files differ: %s' % sorted(set(sums) ^ present))
+          for name, h in sorted(sums.items()):
+              ok = name in present and sha(open(name, 'rb').read()) == h
+              print('%-8s %s %s' % ('ok' if ok else 'MISMATCH', h, name))
+              if not ok: bad.append('hash mismatch: ' + name)
+          if os.environ['GPL'] == 'yes' and not any(f.lower().endswith('source.zip') or 'source' in f.lower() for f in files):
+              bad.append('GPL build without its source zip')
+          # No game files: game data archives, Unity/game assemblies, Minecraft classes, and (when the build job listed them)
+          # the compile-time reference assemblies, by name and by SHA-256.
+          GAME_EXT = {'.wad', '.iwad', '.esm', '.esl', '.bsa', '.ba2', '.cpk', '.vpk', '.pak', '.utoc', '.ucas', '.uasset',
+                      '.uexp', '.umap', '.bdt', '.bhd', '.dcx', '.gpk', '.forge', '.rpf'}
+          GAME_DLL = re.compile(r'^(assembly-csharp.*|unityengine.*|unity\..*|mono\.cecil.*)\.dll$')
+          forbidden_sha, forbidden_name = {}, set()
+          if os.path.exists('logs/forbidden-assemblies.txt'):
+              for line in open('logs/forbidden-assemblies.txt', encoding='utf-8'):
+                  p = line.split()
+                  if len(p) >= 2: forbidden_sha[p[0]] = p[1]; forbidden_name.add(p[1].lower())
+              print('reference assemblies that must not ship: %d' % len(forbidden_sha))
+          own = {n.lower() for n in os.environ.get('OWN_DLLS', '').split()}
+          def check(container, name, data):
+              base = name.replace('\\', '/').rsplit('/', 1)[-1].lower()
+              where = container if container == name else container + ':' + name
+              if os.path.splitext(base)[1] in GAME_EXT: bad.append('game data file: ' + where)
+              if GAME_DLL.match(base): bad.append('game assembly: ' + where)
+              if base in forbidden_name and base not in own: bad.append('reference assembly (by name): ' + where)
+              if sha(data) in forbidden_sha: bad.append('reference assembly (by SHA-256): ' + where)
+              if container.endswith('.jar') and container != name and re.match(r'(net/minecraft|com/mojang)/', name):
+                  bad.append('Minecraft class: ' + where)
+          n = 0
+          for f in files:
+              data = open(f, 'rb').read(); check(f, f, data); n += 1
+              if f.lower().endswith(('.zip', '.jar')):
+                  with zipfile.ZipFile(f) as z:
+                      for i in z.infolist():
+                          if i.is_dir(): continue
+                          d = z.read(i); check(f, i.filename, d); n += 1
+                          if i.filename.lower().endswith('.jar'):
+                              import io
+                              with zipfile.ZipFile(io.BytesIO(d)) as j:
+                                  for k in j.infolist():
+                                      if not k.is_dir(): check(i.filename, k.filename, j.read(k)); n += 1
+          print('checked %d files and archive entries' % n)
+          for b in bad: print('PROBLEM', b)
+          sys.exit(1 if bad else 0)
+          EOF
+          cat ../check.log
+
+      - name: Write the build log summary
+        shell: bash
+        working-directory: build
+        run: |
+          set -euo pipefail
+          python3 -I - <<'EOF'
+          import hashlib, os
+          out = open('BUILD-LOG-SUMMARY.txt', 'w', encoding='utf-8', newline='\n')
+          w = lambda s='': out.write(s + '\n')
+          w('Build log summary: %s %s (%s)' % (os.environ['TITLE'], os.environ['VER'], os.environ['TAG']))
+          w('Workflow run: %s' % os.environ['RUN_URL'])
+          w('Workflow commit: %s' % os.environ['GITHUB_SHA'])
+          w('This file is not listed in SHA256SUMS.txt: it is written after the build, from the build job\'s logs.')
+          w()
+          w('==== STATUS.txt ====')
+          w(open('STATUS.txt', encoding='utf-8', errors='replace').read().rstrip())
+          w()
+          w('==== release checks ====')
+          w(open('../check.log', encoding='utf-8', errors='replace').read().rstrip())
+          logs = []
+          for d, _, fs in os.walk('logs'):
+              for f in fs: logs.append(os.path.join(d, f).replace('\\', '/'))
+          for p in sorted(logs):
+              size = os.path.getsize(p)
+              if p.startswith('logs/raw/') or not p.endswith(('.log', '.txt', '.json')):
+                  w(); w('==== %s (%d bytes, sha256 %s; binary copy kept for checking, not shown) ====' % (
+                      p, size, hashlib.sha256(open(p, 'rb').read()).hexdigest()))
+                  continue
+              lines = open(p, encoding='utf-8', errors='replace').read().splitlines()
+              w()
+              if size <= 24000:
+                  w('==== %s (%d bytes) ====' % (p, size)); [w(l) for l in lines]
+              else:
+                  w('==== %s (%d bytes, %d lines: first 40 and last 150 shown) ====' % (p, size, len(lines)))
+                  [w(l) for l in lines[:40]]; w('[...]'); [w(l) for l in lines[-150:]]
+          out.close()
+          EOF
+          wc -c BUILD-LOG-SUMMARY.txt
+
+      - name: Make the DRAFT release doomcraft-v0.1.0
+        shell: bash
+        working-directory: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # A draft left by an earlier try of this workflow is replaced; a published release is never touched.
+          gh api "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | [.id, .draft] | @tsv" > ../existing.tsv
+          while IFS=$'\t' read -r RID DRAFT; do
+            [ -n "$RID" ] || continue
+            if [ "$DRAFT" = "true" ]; then gh api -X DELETE "repos/$GH_REPO/releases/$RID"; echo "deleted old draft $RID"
+            else echo "$TAG is already published; not touching it"; exit 1; fi
+          done < ../existing.tsv
+          if git ls-remote --exit-code --tags "https://github.com/$GH_REPO.git" "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "tag $TAG already exists"; exit 1
+          fi
+          {
+            echo "**DRAFT, not published.** Unofficial community build for the Mashup Library."
+            echo
+            echo "DoomCraft 0.1.0 by roryekay (DOOM / DOOM II in a patched GZDoom 4.14.2 + Minecraft 26.3): the creator's own v0.1.0 files, taken byte for byte out of his installer (pinned SHA-256) and checked against his payload-sha256.json. Nothing was recompiled or changed."
+            echo
+            echo "- Source: https://github.com/${UPSTREAM}/tree/${UPSTREAM_SHA}"
+            echo "- Licence: ${LICENCE} (LICENSE.txt; credits and third-party notices in NOTICE.txt)"
+            [ "$GPL" = yes ] && echo "- Complete corresponding source: DoomCraft-Engine-Source-0.1.0.zip (the engine; the creator's file, unchanged) and doomcraft-0.1.0-source.zip (the repo at the pinned commit)"
+            echo "- Built by: ${RUN_URL} (workflow \`.github/workflows/build-${ID}.yml\` at ${GITHUB_SHA})"
+            echo "- Details: https://github.com/${GH_REPO}/blob/${GITHUB_SHA}/docs/${ID}/README.md"
+            echo "- No game files are included."
+            echo
+            echo "SHA-256 (SHA256SUMS.txt):"
+            echo '```'
+            cat SHA256SUMS.txt
+            echo '```'
+          } > ../notes.md
+          FILES=(); for f in *; do if [ -f "$f" ] && [ "$f" != STATUS.txt ]; then FILES+=("$f"); fi; done
+          printf '%s\n' "${FILES[@]}"
+          gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "$TITLE $VER" --notes-file ../notes.md "${FILES[@]}"
+          gh api "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | .html_url, (.assets[] | \"\(.name) \(.size)\")"

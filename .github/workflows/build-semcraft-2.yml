@@ -1,0 +1,370 @@
+# BUILD: SemCraft 2 0.1.0 -> DRAFT release semcraft-2-v0.1.0 of this repo.
+# SemCraft 2 by animeliodas (Serious Sam Classic + Minecraft 26.3, GPL-2.0), built unchanged at a pinned commit,
+# against the SeriousBridge core pinned at 4ceff85 and the Serious Sam Classics Patch SDK 1.9.4 (b7f2ff4, with its
+# submodules). Toolset: the creator's sam/build.sh MSBuild command (PlatformToolset v143, Win32) with the runner's
+# Visual Studio 2022 (windows-2022 image). No game files: the plugin compiles against the SDK's Serious Engine 1
+# headers and import libraries from the SDK's public GPL repository (SE1-ModSDK, Croteam's 2001-2002 SDK).
+#
+# Two jobs: `build` runs the creator's build on a Windows runner with a read-only token and uploads the files
+# as an artifact; `release` runs none of that code: it checks SHA256SUMS.txt, LICENSE/NOTICE, the GPL source
+# and that no game file is in any file or archive, then makes a DRAFT release (published by hand after review).
+# Started by hand: gh api -X POST repos/yousufkiani99/mashup-builds/actions/workflows/build-semcraft-2.yml/dispatches
+# -f ref=<branch>. The push trigger only registers the workflow; on a push both jobs are skipped.
+name: Build - SemCraft 2
+
+on:
+  push:
+    branches: ['builds/wave2']
+    paths: ['.github/workflows/build-semcraft-2.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    timeout-minutes: 60
+    env:
+      ID: semcraft-2
+      VER: 0.1.0
+      UPSTREAM: animeliodas/SemCraft2
+      UPSTREAM_SHA: 66f022aa5f89f36c7e9019dda5b2a95c687248cd
+    defaults:
+      run:
+        working-directory: upstream
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: animeliodas/SemCraft2
+          ref: 66f022aa5f89f36c7e9019dda5b2a95c687248cd
+          path: upstream
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Logs folder
+        shell: bash
+        working-directory: .
+        run: |
+          mkdir -p logs out
+          test "$(git -C upstream rev-parse HEAD)" = "$UPSTREAM_SHA"   # the pinned commit, nothing else
+          git -C upstream log -1 --format='upstream %H %ci %s' | tee logs/0-upstream.txt
+
+      - name: Get the Classics Patch SDK 1.9.4 (with submodules) and SeriousBridge 4ceff85
+        id: deps
+        shell: bash
+        working-directory: .
+        run: |
+          set -euo pipefail
+          git clone -q --branch 1.9.4 https://github.com/SamClassicPatch/SuperProject _deps/SuperProject
+          test "$(git -C _deps/SuperProject rev-parse HEAD)" = b7f2ff455c03dcb2ab4dcfd44b0443762864127f
+          git -C _deps/SuperProject submodule update -q --init --recursive
+          git -C _deps/SuperProject submodule status --recursive | tee logs/0-sdk-submodules.txt
+          git clone -q https://github.com/animeliodas/SeriousBridge seriousbridge
+          git -C seriousbridge checkout -q 4ceff85313f5a8928a1e66f827ae11649f360f91
+          git -C seriousbridge log -1 --format='SeriousBridge %H %ci %s' | tee -a logs/0-sdk-submodules.txt
+
+      - name: Build SemCraft2.dll for TFE 1.05 and TSE 1.07 (the creator's MSBuild command)
+        id: msbuild
+        shell: bash
+        env:
+          MSYS_NO_PATHCONV: '1'
+        run: |
+          set -o pipefail
+          VS=$("/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products '*' -version '[17.0,18.0)' -requires Microsoft.Component.MSBuild -property installationPath)
+          MSB="$VS\\MSBuild\\Current\\Bin\\MSBuild.exe"
+          echo "MSBuild: $MSB" | tee ../logs/1-msbuild.log
+          SP_POSIX="$(cd ../_deps/SuperProject && pwd)"; SP="$(cygpath -w "$SP_POSIX")\\"
+          SB="$(cygpath -w "$(cd ../seriousbridge && pwd)")\\"
+          for CFG in Release_TFE105 Release_TSE107; do
+            mkdir -p "$SP_POSIX/Bin/$CFG"
+            cp -n "$SP_POSIX/API/lib/classicscore.lib" "$SP_POSIX/Bin/$CFG/ClassicsCore.lib" 2>/dev/null || true
+            "$MSB" "$(cygpath -w "$PWD/sam/SemCraft2.vcxproj")" -p:Configuration="$CFG" -p:Platform=Win32 \
+              -p:PlatformToolset=v143 -p:SuperProjectDir="$SP" -p:SolutionDir="$SP" -p:SeriousBridgeDir="$SB" -m -v:m -nologo \
+              2>&1 | tee -a ../logs/1-msbuild.log || exit 1
+            test -f "sam/dist/$CFG/SemCraft2.dll"
+          done
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - uses: gradle/actions/setup-gradle@v4 # checks gradle-wrapper.jar is genuine
+
+      - name: Build the Fabric mod (Minecraft 26.3)
+        id: gradle
+        shell: cmd
+        working-directory: upstream/mc
+        run: |
+          call gradlew.bat --no-daemon --no-configuration-cache --stacktrace build > ..\..\logs\2-gradle.log 2>&1
+          set RC=%ERRORLEVEL%
+          type ..\..\logs\2-gradle.log
+          exit /b %RC%
+
+      - name: Package the release files and the source
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=../out; ST=../stage; rm -rf "$ST"; mkdir -p "$ST"
+          JAR=""; for f in mc/build/libs/*.jar; do case "$f" in *-sources.jar|*-dev.jar) ;; *) JAR="$f" ;; esac; done
+          test -n "$JAR"; cp "$JAR" "$OUT/"
+          cp LICENSE "$OUT/LICENSE.txt"
+          {
+            echo "SemCraft 2 ${VER} - unofficial community build"
+            echo
+            echo "What this is: a ready-made build of SemCraft 2 by animeliodas, https://github.com/${UPSTREAM}, compiled"
+            echo "unchanged from commit ${UPSTREAM_SHA} together with the SeriousBridge core"
+            echo "(https://github.com/animeliodas/SeriousBridge, commit 4ceff85313f5a8928a1e66f827ae11649f360f91) and the"
+            echo "Serious Sam Classics Patch SDK 1.9.4 (https://github.com/SamClassicPatch/SuperProject, commit"
+            echo "b7f2ff455c03dcb2ab4dcfd44b0443762864127f) by GitHub Actions (Visual Studio 2022, v143, Win32; Gradle with"
+            echo "Temurin JDK 25). It is NOT an official release: it is a community build made for the Mashup Library app under"
+            echo "the GNU GPL v2 (LICENSE.txt). The complete source used for this build is ${ID}-${VER}-source.zip, published"
+            echo "next to it. Report problems with this build to the Mashup Library, not to animeliodas."
+            echo
+            echo "Single player. Needs Serious Sam Classics Patch 1.9.4 (installed separately from its official release) and"
+            echo "OpenGL mode. TFE = Serious Sam Classic: The First Encounter (1.05); TSE = The Second Encounter (1.07)."
+            echo
+            echo "Credits: animeliodas (SemCraft 2, SeriousBridge); Rehan and universal-modder contributors (the Minecraft"
+            echo "frame exporter, camera/fog mixins and WebSocket link it adapts, MIT); DreamyCecil and the Classics Patch"
+            echo "contributors (SDK, GPL-2); Croteam (Serious Engine 1, GPL-2); TooTallNate (Java-WebSocket, MIT); FabricMC."
+            echo
+            echo "NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT."
+            echo "Not affiliated with Croteam or Devolver Digital. No game files are included."
+            echo
+            echo "---- Files ----"
+            echo "${ID}-${VER}-tfe.zip  unpacks into the First Encounter folder: Bin/Plugins/SemCraft2.dll (+ notices)"
+            echo "${ID}-${VER}-tse.zip  unpacks into the Second Encounter folder: Bin/Plugins/SemCraft2.dll (+ notices)"
+            echo "$(basename "$JAR")    the Fabric mod for Minecraft 26.3 (Fabric Loader 0.19.5, Fabric API 0.161.0+26.3)"
+            echo "${ID}-${VER}-source.zip  SemCraft2, SeriousBridge and the Classics Patch SDK exactly as built"
+            echo
+            echo "==== THIRD_PARTY_NOTICES.md ===="; cat THIRD_PARTY_NOTICES.md; echo
+            echo "==== Java-WebSocket 1.6.0 (bundled in the jar): LICENSE ===="
+            curl -fsSL https://raw.githubusercontent.com/TooTallNate/Java-WebSocket/v1.6.0/LICENSE; echo
+          } > "$OUT/NOTICE.txt"
+          for G in tfe:Release_TFE105 tse:Release_TSE107; do
+            S="$ST/${G%%:*}/Bin/Plugins"; mkdir -p "$S"
+            cp "sam/dist/${G#*:}/SemCraft2.dll" "$S/"
+            cp "$OUT/LICENSE.txt" "$S/SemCraft2-LICENSE.txt"; cp "$OUT/NOTICE.txt" "$S/SemCraft2-NOTICE.txt"
+            (cd "$ST/${G%%:*}" && 7z a -tzip -bso0 "../../out/${ID}-${VER}-${G%%:*}.zip" .)
+            mkdir -p ../logs/raw/${G%%:*} && cp "sam/dist/${G#*:}/"*.{dll,pdb,map} ../logs/raw/${G%%:*}/ 2>/dev/null || true
+          done
+          # Complete source: the three trees exactly as built (no .git, no build output)
+          SRC="$ST/src"; mkdir -p "$SRC"
+          git archive --format=tar --prefix=SemCraft2/ HEAD | tar -x -C "$SRC"
+          git -C ../seriousbridge archive --format=tar --prefix=seriousbridge/ HEAD | tar -x -C "$SRC"
+          mkdir -p "$SRC/_deps/SuperProject"
+          (cd ../_deps/SuperProject && git ls-files --recurse-submodules -z | tar --null -T - -cf -) | tar -x -C "$SRC/_deps/SuperProject"
+          {
+            echo "Source of SemCraft 2 ${VER} as built for the Mashup Library (GPL-2.0)."
+            echo "SemCraft2      ${UPSTREAM}@${UPSTREAM_SHA}"
+            echo "seriousbridge  animeliodas/SeriousBridge@4ceff85313f5a8928a1e66f827ae11649f360f91"
+            echo "_deps/SuperProject  SamClassicPatch/SuperProject@b7f2ff455c03dcb2ab4dcfd44b0443762864127f (tag 1.9.4) with:"
+            cat ../logs/0-sdk-submodules.txt
+            echo
+            echo "Build: for each of Release_TFE105 and Release_TSE107, copy _deps/SuperProject/API/lib/classicscore.lib to"
+            echo "_deps/SuperProject/Bin/<config>/ClassicsCore.lib, then MSBuild SemCraft2/sam/SemCraft2.vcxproj"
+            echo "-p:Configuration=<config> -p:Platform=Win32 -p:PlatformToolset=v143 -p:SuperProjectDir=<SuperProject>\\"
+            echo "-p:SolutionDir=<SuperProject>\\ -p:SeriousBridgeDir=<seriousbridge>\\  (as SemCraft2/sam/build.sh does)."
+            echo "Minecraft mod: cd SemCraft2/mc && gradlew build (JDK 25)."
+          } > "$SRC/BUILD.txt"
+          (cd "$SRC" && 7z a -tzip -bso0 "../../out/${ID}-${VER}-source.zip" .)
+          (cd "$OUT" && sha256sum -- * | sed 's/ \*/  /' > ../SHA256SUMS.txt) && mv ../SHA256SUMS.txt "$OUT/" && cat "$OUT/SHA256SUMS.txt"
+
+      - name: Collect files, logs and status (always)
+        if: always()
+        shell: bash
+        working-directory: .
+        run: |
+          set -euo pipefail
+          mkdir -p push && cp -r out/. push/ 2>/dev/null || true
+          mkdir -p push/logs && cp -r logs/. push/logs/ 2>/dev/null || true
+          {
+            echo "upstream=${UPSTREAM}@${UPSTREAM_SHA}"
+            echo "run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "deps=${{ steps.deps.outcome }} msbuild=${{ steps.msbuild.outcome }} gradle=${{ steps.gradle.outcome }} package=${{ steps.package.outcome }}"
+          } > push/STATUS.txt
+
+      - name: Upload them for the release job
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-semcraft-2
+          path: push/
+          if-no-files-found: error
+          retention-days: 3
+
+  release:
+    # Runs none of the creator's code (no checkout, nothing from the artifact is executed): checks the files, then
+    # makes a DRAFT release. Publishing is done by hand after review.
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      ID: semcraft-2
+      VER: 0.1.0
+      TAG: semcraft-2-v0.1.0
+      TITLE: "SemCraft 2"
+      UPSTREAM: animeliodas/SemCraft2
+      UPSTREAM_SHA: 66f022aa5f89f36c7e9019dda5b2a95c687248cd
+      LICENCE: GPL-2.0
+      GPL: 'yes'
+      OWN_DLLS: ''
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-semcraft-2
+          path: build
+
+      - name: Check the files (SHA256SUMS, licence and notice, GPL source, no game files)
+        shell: bash
+        working-directory: build
+        run: |
+          set -euo pipefail
+          cat STATUS.txt
+          python3 -I - > ../check.log 2>&1 <<'EOF' || { cat ../check.log; exit 1; }
+          import hashlib, os, re, sys, zipfile
+          def sha(b): return hashlib.sha256(b).hexdigest()
+          files = sorted(f for f in os.listdir('.') if os.path.isfile(f) and f != 'STATUS.txt')
+          bad = []
+          for n in ('SHA256SUMS.txt', 'LICENSE.txt', 'NOTICE.txt'):
+              if n not in files: bad.append('missing ' + n)
+          sums = {}
+          for line in open('SHA256SUMS.txt', encoding='utf-8'):
+              line = line.rstrip('\r\n')
+              if line:
+                  h, name = line.split('  ', 1); sums[name] = h
+          present = set(files) - {'SHA256SUMS.txt'}
+          if set(sums) != present: bad.append('SHA256SUMS.txt and the files differ: %s' % sorted(set(sums) ^ present))
+          for name, h in sorted(sums.items()):
+              ok = name in present and sha(open(name, 'rb').read()) == h
+              print('%-8s %s %s' % ('ok' if ok else 'MISMATCH', h, name))
+              if not ok: bad.append('hash mismatch: ' + name)
+          if os.environ['GPL'] == 'yes' and not any(f.lower().endswith('source.zip') or 'source' in f.lower() for f in files):
+              bad.append('GPL build without its source zip')
+          # No game files: game data archives, Unity/game assemblies, Minecraft classes, and (when the build job listed them)
+          # the compile-time reference assemblies, by name and by SHA-256.
+          GAME_EXT = {'.wad', '.iwad', '.esm', '.esl', '.bsa', '.ba2', '.cpk', '.vpk', '.pak', '.utoc', '.ucas', '.uasset',
+                      '.uexp', '.umap', '.bdt', '.bhd', '.dcx', '.gpk', '.forge', '.rpf'}
+          GAME_DLL = re.compile(r'^(assembly-csharp.*|unityengine.*|unity\..*|mono\.cecil.*)\.dll$')
+          forbidden_sha, forbidden_name = {}, set()
+          if os.path.exists('logs/forbidden-assemblies.txt'):
+              for line in open('logs/forbidden-assemblies.txt', encoding='utf-8'):
+                  p = line.split()
+                  if len(p) >= 2: forbidden_sha[p[0]] = p[1]; forbidden_name.add(p[1].lower())
+              print('reference assemblies that must not ship: %d' % len(forbidden_sha))
+          own = {n.lower() for n in os.environ.get('OWN_DLLS', '').split()}
+          def check(container, name, data):
+              base = name.replace('\\', '/').rsplit('/', 1)[-1].lower()
+              where = container if container == name else container + ':' + name
+              if os.path.splitext(base)[1] in GAME_EXT: bad.append('game data file: ' + where)
+              if GAME_DLL.match(base): bad.append('game assembly: ' + where)
+              if base in forbidden_name and base not in own: bad.append('reference assembly (by name): ' + where)
+              if sha(data) in forbidden_sha: bad.append('reference assembly (by SHA-256): ' + where)
+              if container.endswith('.jar') and container != name and re.match(r'(net/minecraft|com/mojang)/', name):
+                  bad.append('Minecraft class: ' + where)
+          n = 0
+          for f in files:
+              data = open(f, 'rb').read(); check(f, f, data); n += 1
+              if f.lower().endswith(('.zip', '.jar')):
+                  with zipfile.ZipFile(f) as z:
+                      for i in z.infolist():
+                          if i.is_dir(): continue
+                          d = z.read(i); check(f, i.filename, d); n += 1
+                          if i.filename.lower().endswith('.jar'):
+                              import io
+                              with zipfile.ZipFile(io.BytesIO(d)) as j:
+                                  for k in j.infolist():
+                                      if not k.is_dir(): check(i.filename, k.filename, j.read(k)); n += 1
+          print('checked %d files and archive entries' % n)
+          for b in bad: print('PROBLEM', b)
+          sys.exit(1 if bad else 0)
+          EOF
+          cat ../check.log
+
+      - name: Write the build log summary
+        shell: bash
+        working-directory: build
+        run: |
+          set -euo pipefail
+          python3 -I - <<'EOF'
+          import hashlib, os
+          out = open('BUILD-LOG-SUMMARY.txt', 'w', encoding='utf-8', newline='\n')
+          w = lambda s='': out.write(s + '\n')
+          w('Build log summary: %s %s (%s)' % (os.environ['TITLE'], os.environ['VER'], os.environ['TAG']))
+          w('Workflow run: %s' % os.environ['RUN_URL'])
+          w('Workflow commit: %s' % os.environ['GITHUB_SHA'])
+          w('This file is not listed in SHA256SUMS.txt: it is written after the build, from the build job\'s logs.')
+          w()
+          w('==== STATUS.txt ====')
+          w(open('STATUS.txt', encoding='utf-8', errors='replace').read().rstrip())
+          w()
+          w('==== release checks ====')
+          w(open('../check.log', encoding='utf-8', errors='replace').read().rstrip())
+          logs = []
+          for d, _, fs in os.walk('logs'):
+              for f in fs: logs.append(os.path.join(d, f).replace('\\', '/'))
+          for p in sorted(logs):
+              size = os.path.getsize(p)
+              if p.startswith('logs/raw/') or not p.endswith(('.log', '.txt', '.json')):
+                  w(); w('==== %s (%d bytes, sha256 %s; binary copy kept for checking, not shown) ====' % (
+                      p, size, hashlib.sha256(open(p, 'rb').read()).hexdigest()))
+                  continue
+              lines = open(p, encoding='utf-8', errors='replace').read().splitlines()
+              w()
+              if size <= 24000:
+                  w('==== %s (%d bytes) ====' % (p, size)); [w(l) for l in lines]
+              else:
+                  w('==== %s (%d bytes, %d lines: first 40 and last 150 shown) ====' % (p, size, len(lines)))
+                  [w(l) for l in lines[:40]]; w('[...]'); [w(l) for l in lines[-150:]]
+          out.close()
+          EOF
+          wc -c BUILD-LOG-SUMMARY.txt
+
+      - name: Make the DRAFT release semcraft-2-v0.1.0
+        shell: bash
+        working-directory: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # A draft left by an earlier try of this workflow is replaced; a published release is never touched.
+          gh api "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | [.id, .draft] | @tsv" > ../existing.tsv
+          while IFS=$'\t' read -r RID DRAFT; do
+            [ -n "$RID" ] || continue
+            if [ "$DRAFT" = "true" ]; then gh api -X DELETE "repos/$GH_REPO/releases/$RID"; echo "deleted old draft $RID"
+            else echo "$TAG is already published; not touching it"; exit 1; fi
+          done < ../existing.tsv
+          if git ls-remote --exit-code --tags "https://github.com/$GH_REPO.git" "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "tag $TAG already exists"; exit 1
+          fi
+          {
+            echo "**DRAFT, not published.** Unofficial community build for the Mashup Library."
+            echo
+            echo "SemCraft 2 0.1.0 by animeliodas (Serious Sam Classic + Minecraft 26.3), compiled unchanged from the pinned commit with SeriousBridge 4ceff85 and the Serious Sam Classics Patch SDK 1.9.4, using the creator's MSBuild command (Visual Studio 2022, v143, Win32) and the Fabric mod's Gradle build."
+            echo
+            echo "- Source: https://github.com/${UPSTREAM}/tree/${UPSTREAM_SHA}"
+            echo "- Licence: ${LICENCE} (LICENSE.txt; credits and third-party notices in NOTICE.txt)"
+            [ "$GPL" = yes ] && echo "- Complete corresponding source: semcraft-2-0.1.0-source.zip (SemCraft2, SeriousBridge and the Classics Patch SDK exactly as built)"
+            echo "- Built by: ${RUN_URL} (workflow \`.github/workflows/build-${ID}.yml\` at ${GITHUB_SHA})"
+            echo "- Details: https://github.com/${GH_REPO}/blob/${GITHUB_SHA}/docs/${ID}/README.md"
+            echo "- No game files are included."
+            echo
+            echo "SHA-256 (SHA256SUMS.txt):"
+            echo '```'
+            cat SHA256SUMS.txt
+            echo '```'
+          } > ../notes.md
+          FILES=(); for f in *; do if [ -f "$f" ] && [ "$f" != STATUS.txt ]; then FILES+=("$f"); fi; done
+          printf '%s\n' "${FILES[@]}"
+          gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "$TITLE $VER" --notes-file ../notes.md "${FILES[@]}"
+          gh api "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | .html_url, (.assets[] | \"\(.name) \(.size)\")"

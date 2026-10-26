@@ -1,0 +1,342 @@
+# BUILD: PalCraft 0.2.2 -> DRAFT release palcraft-v0.2.2 of this repo.
+# PalCraft by EQQX0 (Palworld + Minecraft 1.21.1, MIT), built unchanged at a pinned commit (0.2.2 code) with the
+# creator's own scripts: tools/gen.py --check, tools/build_native.sh (llvm-mingw 20261006, the version in the
+# creator's MODLOG, pinned by SHA-256), the mod's Gradle build, and tools/package.py's build_host() for the mod zip.
+# No game files: the Lua side uses UE4SS reflection at run time and the DLL hooks D3D11. UE4SS itself is not
+# included. runtime_dir.txt and dev.lua are never packaged (build_host() leaves them out).
+#
+# Two jobs: `build` runs the creator's build on a Windows runner with a read-only token and uploads the files
+# as an artifact; `release` runs none of that code: it checks SHA256SUMS.txt, LICENSE/NOTICE, the GPL source
+# and that no game file is in any file or archive, then makes a DRAFT release (published by hand after review).
+# Started by hand: gh api -X POST repos/yousufkiani99/mashup-builds/actions/workflows/build-palcraft.yml/dispatches
+# -f ref=<branch>. The push trigger only registers the workflow; on a push both jobs are skipped.
+name: Build - PalCraft
+
+on:
+  push:
+    branches: ['builds/wave2']
+    paths: ['.github/workflows/build-palcraft.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    timeout-minutes: 60
+    env:
+      ID: palcraft
+      VER: 0.2.2
+      UPSTREAM: EQQX0/PalCraft
+      UPSTREAM_SHA: 1431332b4cf75603e80cf4ce137347cebf880807
+    defaults:
+      run:
+        working-directory: upstream
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: EQQX0/PalCraft
+          ref: 1431332b4cf75603e80cf4ce137347cebf880807
+          path: upstream
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Logs folder
+        shell: bash
+        working-directory: .
+        run: |
+          mkdir -p logs out
+          test "$(git -C upstream rev-parse HEAD)" = "$UPSTREAM_SHA"   # the pinned commit, nothing else
+          git -C upstream log -1 --format='upstream %H %ci %s' | tee logs/0-upstream.txt
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check the generated files (python tools/gen.py --check)
+        id: gen
+        shell: bash
+        run: |
+          set -o pipefail
+          python tools/gen.py --check 2>&1 | tee ../logs/0-gen-check.log
+
+      - name: Get llvm-mingw 20261006 (official release) into .tools/compiler
+        shell: bash
+        env:
+          LLVM_URL: https://github.com/mstorsjo/llvm-mingw/releases/download/20261006/llvm-mingw-20261006-ucrt-x86_64.zip
+          LLVM_SHA256: 317492c456aa27ee607a5919f1d2d38dcdc1112516a24d0bf4b00d078f52d17a
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o ../llvm-mingw.zip "$LLVM_URL"
+          echo "${LLVM_SHA256}  ../llvm-mingw.zip" | sha256sum -c - | tee ../logs/1-llvm-mingw.log
+          mkdir -p .tools/compiler && 7z x -bso0 -y -o.tools/compiler ../llvm-mingw.zip
+          ls -d .tools/compiler/*/bin | tee -a ../logs/1-llvm-mingw.log
+
+      - name: Build palcraft.dll (bash tools/build_native.sh)
+        id: native
+        shell: bash
+        run: |
+          set -o pipefail
+          "$(ls -d .tools/compiler/*/bin | head -1)/clang++" --version | tee ../logs/1-native.log
+          bash tools/build_native.sh 2>&1 | tee -a ../logs/1-native.log
+          test -f host/lua/PalCraft/palcraft.dll
+          # build_native.sh regenerates the generated files (gen.py --force); they must equal the committed ones
+          git status --porcelain --untracked-files=no | tee -a ../logs/1-native.log
+          git diff --quiet || { echo "generated files differ from the commit"; exit 1; }
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - uses: gradle/actions/setup-gradle@v4 # checks gradle-wrapper.jar is genuine
+
+      - name: Build the Fabric mod (Minecraft 1.21.1)
+        id: gradle
+        shell: cmd
+        working-directory: upstream/mc
+        run: |
+          call gradlew.bat --no-daemon --no-configuration-cache --stacktrace build > ..\..\logs\2-gradle.log 2>&1
+          set RC=%ERRORLEVEL%
+          type ..\..\logs\2-gradle.log
+          exit /b %RC%
+
+      - name: Package the release files (the creator's build_host)
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=../out
+          test -f "mc/build/libs/palcraft-${VER}.jar"
+          cp "mc/build/libs/palcraft-${VER}.jar" "$OUT/"
+          python -I -c "import sys; from pathlib import Path; sys.path.insert(0, 'tools'); import package; package.build_host(Path(sys.argv[1]))" "$OUT/PalCraft-${VER}.zip"
+          cp LICENSE "$OUT/LICENSE.txt"
+          {
+            echo "PalCraft ${VER} - unofficial community build"
+            echo
+            echo "What this is: a ready-made build of PalCraft by EQQX0 (\"PalCraft contributors\"), https://github.com/${UPSTREAM},"
+            echo "compiled unchanged from commit ${UPSTREAM_SHA} by GitHub Actions (windows-latest; the creator's"
+            echo "tools/build_native.sh with llvm-mingw 20261006, the Fabric mod's Gradle build with Temurin JDK 25, and the"
+            echo "creator's tools/package.py build_host for the mod zip). It is NOT an official release: it is a community"
+            echo "build made for the Mashup Library app under the project's MIT licence (LICENSE.txt). Report problems with this"
+            echo "build to the Mashup Library, not to the PalCraft contributors."
+            echo
+            echo "Single-player worlds only. Made for Palworld 1.0.5 (Steam build 25246127) with the official UE4SS 3.0.1,"
+            echo "installed separately; this package carries no UE4SS file."
+            echo
+            echo "Credits: EQQX0 and the PalCraft contributors; siddoff (Minecraft Ring, MIT) and justbustin"
+            echo "(minecraft-crossover-bridge, MIT), which PalCraft's Fabric mod and link started from; Rehan and"
+            echo "universal-modder contributors (the passthrough method, MIT); Tsuda Kageyu (MinHook, BSD-2-Clause); FabricMC."
+            echo
+            echo "NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT."
+            echo "Not affiliated with Pocketpair. No game files are included."
+            echo
+            echo "---- Files ----"
+            echo "PalCraft-${VER}.zip      unpacks into Pal/Binaries/Win64/Mods/PalCraft (UE4SS Lua mod: enabled.txt,"
+            echo "                         palcraft.dll, Scripts/*.lua, MinHook-LICENSE.txt, LICENSE.txt, THIRD_PARTY.md,"
+            echo "                         README.md, NOTICE.txt)"
+            echo "palcraft-${VER}.jar      the Fabric mod for Minecraft 1.21.1 (Fabric Loader 0.19.5, Fabric API"
+            echo "                         0.116.17+1.21.1, installed separately)"
+          } > "$OUT/NOTICE.txt"
+          (cd "$OUT" && 7z a -tzip -bso0 "PalCraft-${VER}.zip" NOTICE.txt)
+          7z l "$OUT/PalCraft-${VER}.zip" | tee ../logs/3-zip-listing.txt
+          mkdir -p ../logs/raw && cp host/lua/PalCraft/palcraft.dll ../logs/raw/
+          (cd "$OUT" && sha256sum -- * | sed 's/ \*/  /' > ../SHA256SUMS.txt) && mv ../SHA256SUMS.txt "$OUT/" && cat "$OUT/SHA256SUMS.txt"
+
+      - name: Collect files, logs and status (always)
+        if: always()
+        shell: bash
+        working-directory: .
+        run: |
+          set -euo pipefail
+          mkdir -p push && cp -r out/. push/ 2>/dev/null || true
+          mkdir -p push/logs && cp -r logs/. push/logs/ 2>/dev/null || true
+          {
+            echo "upstream=${UPSTREAM}@${UPSTREAM_SHA}"
+            echo "run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "gen=${{ steps.gen.outcome }} native=${{ steps.native.outcome }} gradle=${{ steps.gradle.outcome }} package=${{ steps.package.outcome }}"
+          } > push/STATUS.txt
+
+      - name: Upload them for the release job
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-palcraft
+          path: push/
+          if-no-files-found: error
+          retention-days: 3
+
+  release:
+    # Runs none of the creator's code (no checkout, nothing from the artifact is executed): checks the files, then
+    # makes a DRAFT release. Publishing is done by hand after review.
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      ID: palcraft
+      VER: 0.2.2
+      TAG: palcraft-v0.2.2
+      TITLE: "PalCraft"
+      UPSTREAM: EQQX0/PalCraft
+      UPSTREAM_SHA: 1431332b4cf75603e80cf4ce137347cebf880807
+      LICENCE: MIT
+      GPL: 'no'
+      OWN_DLLS: ''
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-palcraft
+          path: build
+
+      - name: Check the files (SHA256SUMS, licence and notice, GPL source, no game files)
+        shell: bash
+        working-directory: build
+        run: |
+          set -euo pipefail
+          cat STATUS.txt
+          python3 -I - > ../check.log 2>&1 <<'EOF' || { cat ../check.log; exit 1; }
+          import hashlib, os, re, sys, zipfile
+          def sha(b): return hashlib.sha256(b).hexdigest()
+          files = sorted(f for f in os.listdir('.') if os.path.isfile(f) and f != 'STATUS.txt')
+          bad = []
+          for n in ('SHA256SUMS.txt', 'LICENSE.txt', 'NOTICE.txt'):
+              if n not in files: bad.append('missing ' + n)
+          sums = {}
+          for line in open('SHA256SUMS.txt', encoding='utf-8'):
+              line = line.rstrip('\r\n')
+              if line:
+                  h, name = line.split('  ', 1); sums[name] = h
+          present = set(files) - {'SHA256SUMS.txt'}
+          if set(sums) != present: bad.append('SHA256SUMS.txt and the files differ: %s' % sorted(set(sums) ^ present))
+          for name, h in sorted(sums.items()):
+              ok = name in present and sha(open(name, 'rb').read()) == h
+              print('%-8s %s %s' % ('ok' if ok else 'MISMATCH', h, name))
+              if not ok: bad.append('hash mismatch: ' + name)
+          if os.environ['GPL'] == 'yes' and not any(f.lower().endswith('source.zip') or 'source' in f.lower() for f in files):
+              bad.append('GPL build without its source zip')
+          # No game files: game data archives, Unity/game assemblies, Minecraft classes, and (when the build job listed them)
+          # the compile-time reference assemblies, by name and by SHA-256.
+          GAME_EXT = {'.wad', '.iwad', '.esm', '.esl', '.bsa', '.ba2', '.cpk', '.vpk', '.pak', '.utoc', '.ucas', '.uasset',
+                      '.uexp', '.umap', '.bdt', '.bhd', '.dcx', '.gpk', '.forge', '.rpf'}
+          GAME_DLL = re.compile(r'^(assembly-csharp.*|unityengine.*|unity\..*|mono\.cecil.*)\.dll$')
+          forbidden_sha, forbidden_name = {}, set()
+          if os.path.exists('logs/forbidden-assemblies.txt'):
+              for line in open('logs/forbidden-assemblies.txt', encoding='utf-8'):
+                  p = line.split()
+                  if len(p) >= 2: forbidden_sha[p[0]] = p[1]; forbidden_name.add(p[1].lower())
+              print('reference assemblies that must not ship: %d' % len(forbidden_sha))
+          own = {n.lower() for n in os.environ.get('OWN_DLLS', '').split()}
+          def check(container, name, data):
+              base = name.replace('\\', '/').rsplit('/', 1)[-1].lower()
+              where = container if container == name else container + ':' + name
+              if os.path.splitext(base)[1] in GAME_EXT: bad.append('game data file: ' + where)
+              if GAME_DLL.match(base): bad.append('game assembly: ' + where)
+              if base in forbidden_name and base not in own: bad.append('reference assembly (by name): ' + where)
+              if sha(data) in forbidden_sha: bad.append('reference assembly (by SHA-256): ' + where)
+              if container.endswith('.jar') and container != name and re.match(r'(net/minecraft|com/mojang)/', name):
+                  bad.append('Minecraft class: ' + where)
+          n = 0
+          for f in files:
+              data = open(f, 'rb').read(); check(f, f, data); n += 1
+              if f.lower().endswith(('.zip', '.jar')):
+                  with zipfile.ZipFile(f) as z:
+                      for i in z.infolist():
+                          if i.is_dir(): continue
+                          d = z.read(i); check(f, i.filename, d); n += 1
+                          if i.filename.lower().endswith('.jar'):
+                              import io
+                              with zipfile.ZipFile(io.BytesIO(d)) as j:
+                                  for k in j.infolist():
+                                      if not k.is_dir(): check(i.filename, k.filename, j.read(k)); n += 1
+          print('checked %d files and archive entries' % n)
+          for b in bad: print('PROBLEM', b)
+          sys.exit(1 if bad else 0)
+          EOF
+          cat ../check.log
+
+      - name: Write the build log summary
+        shell: bash
+        working-directory: build
+        run: |
+          set -euo pipefail
+          python3 -I - <<'EOF'
+          import hashlib, os
+          out = open('BUILD-LOG-SUMMARY.txt', 'w', encoding='utf-8', newline='\n')
+          w = lambda s='': out.write(s + '\n')
+          w('Build log summary: %s %s (%s)' % (os.environ['TITLE'], os.environ['VER'], os.environ['TAG']))
+          w('Workflow run: %s' % os.environ['RUN_URL'])
+          w('Workflow commit: %s' % os.environ['GITHUB_SHA'])
+          w('This file is not listed in SHA256SUMS.txt: it is written after the build, from the build job\'s logs.')
+          w()
+          w('==== STATUS.txt ====')
+          w(open('STATUS.txt', encoding='utf-8', errors='replace').read().rstrip())
+          w()
+          w('==== release checks ====')
+          w(open('../check.log', encoding='utf-8', errors='replace').read().rstrip())
+          logs = []
+          for d, _, fs in os.walk('logs'):
+              for f in fs: logs.append(os.path.join(d, f).replace('\\', '/'))
+          for p in sorted(logs):
+              size = os.path.getsize(p)
+              if p.startswith('logs/raw/') or not p.endswith(('.log', '.txt', '.json')):
+                  w(); w('==== %s (%d bytes, sha256 %s; binary copy kept for checking, not shown) ====' % (
+                      p, size, hashlib.sha256(open(p, 'rb').read()).hexdigest()))
+                  continue
+              lines = open(p, encoding='utf-8', errors='replace').read().splitlines()
+              w()
+              if size <= 24000:
+                  w('==== %s (%d bytes) ====' % (p, size)); [w(l) for l in lines]
+              else:
+                  w('==== %s (%d bytes, %d lines: first 40 and last 150 shown) ====' % (p, size, len(lines)))
+                  [w(l) for l in lines[:40]]; w('[...]'); [w(l) for l in lines[-150:]]
+          out.close()
+          EOF
+          wc -c BUILD-LOG-SUMMARY.txt
+
+      - name: Make the DRAFT release palcraft-v0.2.2
+        shell: bash
+        working-directory: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # A draft left by an earlier try of this workflow is replaced; a published release is never touched.
+          gh api "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | [.id, .draft] | @tsv" > ../existing.tsv
+          while IFS=$'\t' read -r RID DRAFT; do
+            [ -n "$RID" ] || continue
+            if [ "$DRAFT" = "true" ]; then gh api -X DELETE "repos/$GH_REPO/releases/$RID"; echo "deleted old draft $RID"
+            else echo "$TAG is already published; not touching it"; exit 1; fi
+          done < ../existing.tsv
+          if git ls-remote --exit-code --tags "https://github.com/$GH_REPO.git" "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "tag $TAG already exists"; exit 1
+          fi
+          {
+            echo "**DRAFT, not published.** Unofficial community build for the Mashup Library."
+            echo
+            echo "PalCraft 0.2.2 by EQQX0 and the PalCraft contributors (Palworld + Minecraft 1.21.1), compiled unchanged from the pinned commit with the creator's own scripts (tools/build_native.sh with llvm-mingw 20261006, the Fabric mod's Gradle build, tools/package.py build_host)."
+            echo
+            echo "- Source: https://github.com/${UPSTREAM}/tree/${UPSTREAM_SHA}"
+            echo "- Licence: ${LICENCE} (LICENSE.txt; credits and third-party notices in NOTICE.txt)"
+            [ "$GPL" = yes ] && echo "- Complete corresponding source: "
+            echo "- Built by: ${RUN_URL} (workflow \`.github/workflows/build-${ID}.yml\` at ${GITHUB_SHA})"
+            echo "- Details: https://github.com/${GH_REPO}/blob/${GITHUB_SHA}/docs/${ID}/README.md"
+            echo "- No game files are included."
+            echo
+            echo "SHA-256 (SHA256SUMS.txt):"
+            echo '```'
+            cat SHA256SUMS.txt
+            echo '```'
+          } > ../notes.md
+          FILES=(); for f in *; do if [ -f "$f" ] && [ "$f" != STATUS.txt ]; then FILES+=("$f"); fi; done
+          printf '%s\n' "${FILES[@]}"
+          gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "$TITLE $VER" --notes-file ../notes.md "${FILES[@]}"
+          gh api "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | .html_url, (.assets[] | \"\(.name) \(.size)\")"
